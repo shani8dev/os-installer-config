@@ -1,0 +1,9 @@
+label: gpt
+unit: sectors
+sector-size: 512
+
+# Create a FAT32 partition for the EFI system (1GB)
+start=2048, size=2048000, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+
+# Create a Btrfs partition for root (uses all remaining space)
+start=2050048, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709

@@ -1,0 +1,42 @@
+%YAML 1.2
+---
+
+distribution_name: 'Shani OS'
+
+internet_connection_required: no
+
+internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+
+fixed_language: no
+
+suggested_languages:
+    - 'de'
+    - 'en'
+    - 'es'
+    - 'fr'
+    - 'nl'
+    - 'uk'
+
+welcome_page:
+    logo    : '/usr/share/pixmaps/shanios-logo.png'
+    text    : 'Welcome to Shani OS!
+
+
+      This program will guide you through the installation process.
+
+
+      Althrough the live environment tries to imitate an actual install as best as possible it
+      still differs in many ways, Shani OS is best experienced on a full proper installation.'
+    usage   : yes
+
+minimum_disk_size: 64
+offer_disk_encryption: yes
+
+skip_user: no
+skip_locale: no
+
+failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
+
+browser_cmd: 'firefox'
+disks_cmd  : 'gnome-disks'
+wifi_cmd   : 'gnome-control-center wifi'
