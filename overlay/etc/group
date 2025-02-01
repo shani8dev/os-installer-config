@@ -8,3 +8,4 @@ sys:x:3:
 cups:x:209:
 libvirt:x:990:
 kvm:x:78:
+scanner:x:96:

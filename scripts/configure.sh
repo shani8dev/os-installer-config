@@ -4,7 +4,7 @@ set -o pipefail
 set -e  # Exit immediately if a command exits with a non-zero status.
 
 # Constants
-readonly WORKDIR='/mnt/deployment/shared/roota'  # Update as needed
+readonly WORKDIR='/mnt/deployment/shared'  # Update as needed
 readonly OSIDIR='/etc/os-installer'
 readonly USER_SHELL="/bin/bash"  # Change to desired shell if needed
 readonly USER_GROUPS=("wheel" "input" "realtime" "lp" "video" "sys" "cups" "libvirt" "kvm")
@@ -50,6 +50,24 @@ check_env_vars() {
         [[ -z ${!var+x} ]] && quit_on_err "$var is not set"
     done
 }
+
+# Function to mount overlay to /etc
+mount_overlay() {
+    echo "Mounting overlay for /etc"
+
+    # Create directories for overlay if they do not exist
+    sudo mkdir -p "/mnt/deployment/shared/etc-writable"
+    sudo mkdir -p "/mnt/deployment/overlay/upper"
+    sudo mkdir -p "/mnt/deployment/overlay/work"
+
+    # Mount the overlay filesystem for /etc
+    sudo mount -t overlay overlay \
+        -o lowerdir="/mnt/deployment/shared/etc-writable",upperdir="/mnt/deployment/overlay/upper",workdir="/mnt/deployment/overlay/work" \
+        "$WORKDIR/etc" || quit_on_err 'Failed to mount overlay for /etc'
+
+    echo "Overlay mounted successfully"
+}
+
 
 # Function to copy overlay to new root
 copy_overlay() {
@@ -154,7 +172,6 @@ install_software() {
 # Function to configure the firewall
 setup_firewall() {
     echo "Setting up firewall..."
-    sudo arch-chroot "$WORKDIR" pacman -Sy --noconfirm ufw || quit_on_err 'Failed to install UFW'
     sudo arch-chroot "$WORKDIR" ufw allow "$OSI_SSH_PORT" || quit_on_err 'Failed to allow SSH port in firewall'
     sudo arch-chroot "$WORKDIR" ufw enable || quit_on_err 'Failed to enable firewall'
 }
@@ -175,8 +192,8 @@ enable_gdm() {
 
 # Function to create Dracut configuration file
 create_dracut_config() {
-    local mok_key="/path/to/your/mok.key"       # Path to your MOK and Secure Boot key (same for both)
-    local mok_cert="/path/to/your/mok.crt"     # Path to your MOK and Secure Boot certificate (same for both)
+    local mok_key="/usr/share/secureboot/keys/MOK.key"       # Path to your MOK and Secure Boot key (same for both)
+    local mok_cert="/usr/share/secureboot/keys/MOK.crt"     # Path to your MOK and Secure Boot certificate (same for both)
     local splash_image="/usr/share/systemd/bootctl/splash-arch.bmp" # Path to splash image
     local uefi_stub="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"   # Path to UEFI stub
 
@@ -274,6 +291,7 @@ generate_uefi_image() {
     local subvol="$2"  # Add subvolume parameter
     local image_name="shanios-${root_name,,}.efi"  # Set image name directly
     local cmdline
+    local efi_path="/boot/efi/EFI/Linux"
 
     # Retrieve the command line from the configuration file
     cmdline=$(sudo arch-chroot "$WORKDIR" bash -c "source /etc/dracut.conf.d/dracut-cmdline-${root_name}.conf && echo \$kernel_cmdline")
@@ -281,12 +299,13 @@ generate_uefi_image() {
     echo ":: Building unified kernel image for ${root_name}..."
     
     # Create the UEFI image with the desired name
-    if ! sudo arch-chroot "$WORKDIR" dracut -q -f --uefi --cmdline "${cmdline}" --name "${image_name}"; then
+    if ! sudo arch-chroot "$WORKDIR" dracut -q -f --uefi --cmdline "${cmdline}" "$esp/EFI/Linux/${image_name}"; then
         echo "Error: Failed to build unified kernel image for ${root_name}." >&2
         return 1
     fi
 
     echo "Generated UEFI image: ${image_name}."
+
 }
 
 
@@ -316,9 +335,9 @@ create_initramfs() {
 
 # Function to install systemd-boot bootloader
 install_bootloader() {
-    local mok_key="/etc/ssl/private/mok.key"       # Path to your MOK and Secure Boot key
-    local mok_cert="/etc/ssl/certs/mok.crt"       # Path to your MOK and Secure Boot certificate
-    local mok_cer="/etc/ssl/certs/mok.cer"        # Path to your MOK certificate file
+    local mok_key="/usr/share/secureboot/keys/MOK.key"       # Path to your MOK and Secure Boot key
+    local mok_cert="/usr/share/secureboot/keys/MOK.crt"       # Path to your MOK and Secure Boot certificate
+    local mok_cer="/usr/share/secureboot/keys/MOK.cer"        # Path to your MOK certificate file
 
     echo "Installing systemd-boot bootloader..."
 
@@ -380,6 +399,10 @@ EOF
             echo \"Signing \$efi_binary...\"
             sbsign --key \"\$mok_key\" --cert \"\$mok_cert\" --output \"\$efi_path/\$efi_binary\" \"\$efi_path/\$efi_binary\" || { echo \"Failed to sign \$efi_binary\"; exit 1; }
         done
+
+        # Enroll MOK and disable validation
+        mokutil --import \"\$mok_cer\" || error_exit 'Failed to import MOK'
+        mokutil --disable-validation || log 'Failed to disable Secure Boot validation'
     "
 }
 
@@ -413,7 +436,7 @@ LABEL=$ROOTLABEL                /roota        btrfs   defaults,noatime,compress=
 LABEL=$ROOTLABEL                /rootb        btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/rootb  0 0
 LABEL=$ROOTLABEL                /var/lib/flatpak btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/flatpak  0 0
 # Overlay Filesystem
-overlay                         /etc          overlay  lowerdir=/mnt/deployment/shared/etc-writable,upperdir=/deployment/overlay/upper,workdir=/deployment/overlay/work  0 0
+overlay                         /etc          overlay  lowerdir=/deployment/shared/etc-writable,upperdir=/deployment/overlay/upper,workdir=/deployment/overlay/work  0 0
 # EFI Boot Partition
 LABEL=$BOOTLABEL                /boot         vfat    defaults,noatime                                 0 0
 # Temporary filesystems
@@ -433,6 +456,7 @@ EOF
 # Main execution flow
 check_sudo
 check_env_vars
+mount_overlay
 copy_overlay
 sudo arch-chroot "$WORKDIR" dconf update || quit_on_err 'Failed to update dconf'
 # Function calls in sequence
