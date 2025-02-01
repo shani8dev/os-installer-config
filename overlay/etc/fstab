@@ -9,7 +9,7 @@ LABEL=shani_root                  /roota        btrfs   defaults,noatime,subvol=
 LABEL=shani_root                  /rootb        btrfs   defaults,noatime,subvol=deployment/shared/rootb,compress=zstd 0 0
 LABEL=shani_root                  /var/lib/flatpak btrfs   defaults,noatime,subvol=deployment/shared/flatpak,compress=zstd 0 0
 # Overlay Filesystem
-overlay                            /etc          overlay  lowerdir=/mnt/deployment/shared/etc-writable,upperdir=/deployment/overlay/upper,workdir=/deployment/overlay/work 0 0
+overlay                            /etc          overlay  lowerdir=/deployment/shared/etc-writable,upperdir=/deployment/overlay/upper,workdir=/deployment/overlay/work 0 0
 # EFI Boot Partition
 LABEL=shani_boot                  /boot         vfat    defaults,noatime                                  0 0
 # Temporary filesystems
