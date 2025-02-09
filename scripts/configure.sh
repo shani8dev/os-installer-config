@@ -7,7 +7,7 @@ set -e  # Exit immediately if a command exits with a non-zero status.
 readonly WORKDIR='/mnt/deployment/shared'  # Update as needed
 readonly OSIDIR='/etc/os-installer'
 readonly USER_SHELL="/bin/bash"  # Change to desired shell if needed
-readonly USER_GROUPS=("wheel" "input" "realtime" "lp" "video" "sys" "cups" "libvirt" "kvm")
+readonly USER_GROUPS=("wheel" "input" "realtime" "lp" "video" "sys" "cups" "libvirt" "kvm" "scanner")
 readonly ROOTLABEL='shani_root'
 readonly BOOTLABEL='shani_boot'
 readonly SWAPLABEL='shani_swap'

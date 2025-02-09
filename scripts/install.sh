@@ -12,7 +12,8 @@ quit_on_err() {
 rootlabel='shani_root'
 bootlabel='shani_boot'
 btrfs_options='defaults,noatime,compress=zstd'  # Btrfs options
-squashfs_source='/run/archiso/bootmnt/arch/x86_64/airootfs.sfs'
+rootfszst_source='/run/archiso/bootmnt/arch/x86_64/rootfs.zst'
+squashfs_source='/run/archiso/bootmnt/arch/x86_64/flatpackfs.sfs'
 overlaydir='/mnt/deployment/overlay'  # Overlay directory in /mnt
 swapfile_size=$(free -m | awk '/^Mem:/{print $2}')  # Size of RAM in MB
 
@@ -114,8 +115,18 @@ done
 # Create the swapfile
 create_btrfs_swapfile
 
-# Unpack the root filesystem from SquashFS into the subvolume
-sudo unsquashfs -f -d "/mnt/deployment/shared/roota" "$squashfs_source" || quit_on_err "Failed to unpack $squashfs_source"
+############################################
+# Extract the System Image and Flatpak FS
+############################################
+
+# --- Extract System Image ---
+# The system image (*.zst) is extracted into the active root subvolume.
+echo "Extracting system image from $rootzst_source to /mnt/deployment/shared/roota..."
+sudo mkdir -p /mnt/deployment/shared/roota
+sudo zstd -d < $rootzst_source | sudo btrfs receive /mnt/deployment/shared/roota || quit_on_err "Failed to extract system image"
+
+# Unpack the flatpak filesystem from SquashFS into the subvolume
+sudo unsquashfs -f -d "/mnt/deployment/shared/flatpak" "$squashfs_source" || quit_on_err "Failed to unpack $squashfs_source"
 
 # Create a snapshot of roota as rootb after unsquashing
 sudo btrfs subvolume snapshot "/mnt/deployment/shared/roota" "/mnt/deployment/shared/rootb" || quit_on_err "Failed to create snapshot of roota as rootb"
