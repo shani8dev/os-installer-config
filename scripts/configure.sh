@@ -1,482 +1,247 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# configure.sh – Post-installation configuration for Shani OS.
+set -Eeuo pipefail
+IFS=$'\n\t'
+trap 'echo "[ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
 
-set -o pipefail
-set -e  # Exit immediately if a command exits with a non-zero status.
+### Configuration
+OS_NAME="shanios"
+BASE_VERSION="$(date +%Y%m%d)"
+OSIDIR="/etc/os-installer"
+ROOTLABEL="shani_root"
+BOOTLABEL="shani_boot"
+CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_current"
+CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_candidate"
+UKI_BOOT_ENTRY="/boot/loader/entries"
+CURRENT_SLOT_FILE="/deployment/current-slot"
 
-# Constants
-readonly WORKDIR='/mnt/deployment/shared'  # Update as needed
-readonly OSIDIR='/etc/os-installer'
-readonly USER_SHELL="/bin/bash"  # Change to desired shell if needed
-readonly USER_GROUPS=("wheel" "input" "realtime" "lp" "video" "sys" "cups" "libvirt" "kvm" "scanner")
-readonly ROOTLABEL='shani_root'
-readonly BOOTLABEL='shani_boot'
-readonly SWAPLABEL='shani_swap'
+required_vars=(OSI_LOCALE OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION OSI_USE_ENCRYPTION OSI_ENCRYPTION_PIN OSI_USER_NAME OSI_USER_AUTOLOGIN OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE OSI_ADDITIONAL_SOFTWARE OSI_ADDITIONAL_FEATURES OSI_DESKTOP OSI_HOSTNAME OSI_SSH_PORT)
+for var in "${required_vars[@]}"; do
+  [[ -z "${!var:-}" ]] && { echo "[ERROR] $var is not set"; exit 1; }
+done
 
-# Function to quit and notify user of an error
-quit_on_err() {
-    local message="$1"
-    [[ -n $message ]] && printf "Error: %s\n" "$message"
-    sleep 2
-    exit 1
+log() { echo "[CONFIG] $*"; }
+die() { echo "[ERROR] $*" >&2; exit 1; }
+
+TARGET="/mnt"
+
+mount_target() {
+  if [[ -f "$TARGET/$CURRENT_SLOT_FILE" ]]; then
+    ACTIVE_SLOT=$(< "$TARGET/$CURRENT_SLOT_FILE")
+  else
+    ACTIVE_SLOT="blue"
+    echo "$ACTIVE_SLOT" | sudo tee "$TARGET/$CURRENT_SLOT_FILE" >/dev/null
+  fi
+  log "Mounting active system (slot ${ACTIVE_SLOT}) from ${SYSTEM_SUBVOL}/${ACTIVE_SLOT} to ${TARGET}..."
+  sudo mount -o subvol=deployment/system/${ACTIVE_SLOT} /dev/disk/by-label/"$ROOTLABEL" "$TARGET" || die "Failed to mount active system"
+  for fs in proc sys dev run; do
+    sudo mount --rbind "/$fs" "$TARGET/$fs" || die "Failed to mount /$fs"
+  done
+  sudo mount --mkdir /dev/disk/by-label/"$BOOTLABEL" "$TARGET/boot/efi" || die "Failed to mount EFI partition"
 }
 
-# Function to check if the user is in sudo group
-check_sudo() {
-    if ! groups | grep -qE '^(wheel|sudo)'; then
-        quit_on_err 'The current user is not a member of either the sudo or wheel group. This OS-installer configuration requires sudo permissions.'
-    fi
-}
-
-# Function to check required environment variables
-check_env_vars() {
-    local required_vars=(
-        "OSI_LOCALE"
-        "OSI_DEVICE_PATH"
-        "OSI_DEVICE_IS_PARTITION"
-        "OSI_DEVICE_EFI_PARTITION"
-        "OSI_USE_ENCRYPTION"
-        "OSI_ENCRYPTION_PIN"
-        "OSI_USER_NAME"
-        "OSI_USER_AUTOLOGIN"
-        "OSI_USER_PASSWORD"
-        "OSI_FORMATS"
-        "OSI_TIMEZONE"
-        "OSI_ADDITIONAL_SOFTWARE"
-        "OSI_ADDITIONAL_FEATURES"
-        "OSI_DESKTOP"
-    )
-
-    for var in "${required_vars[@]}"; do
-        [[ -z ${!var+x} ]] && quit_on_err "$var is not set"
-    done
-}
-
-# Function to mount overlay to /etc
 mount_overlay() {
-    echo "Mounting overlay for /etc"
-
-    # Create directories for overlay if they do not exist
-    sudo mkdir -p "/mnt/deployment/shared/etc-writable"
-    sudo mkdir -p "/mnt/deployment/overlay/upper"
-    sudo mkdir -p "/mnt/deployment/overlay/work"
-
-    # Mount the overlay filesystem for /etc
-    sudo mount -t overlay overlay \
-        -o lowerdir="/mnt/deployment/shared/etc-writable",upperdir="/mnt/deployment/overlay/upper",workdir="/mnt/deployment/overlay/work" \
-        "$WORKDIR/etc" || quit_on_err 'Failed to mount overlay for /etc'
-
-    echo "Overlay mounted successfully"
+  log "Mounting overlay for /etc"
+  sudo mkdir -p "$TARGET/deployment/data/etc-writable" "$TARGET/deployment/data/overlay/upper" "$TARGET/deployment/data/overlay/work"
+  sudo mount -t overlay overlay -o lowerdir="$TARGET/deployment/data/etc-writable",upperdir="$TARGET/deployment/data/overlay/upper",workdir="$TARGET/deployment/data/overlay/work" "$TARGET/etc" || die "Overlay mount failed"
 }
 
-
-# Function to copy overlay to new root
-copy_overlay() {
-    sudo cp -rv "$OSIDIR/overlay/"* "$WORKDIR/" || quit_on_err 'Failed to copy overlay files'
+run_in_target() {
+  sudo arch-chroot "$TARGET" /bin/bash -c "$1"
 }
 
-# Function to enable systemd-homed
-enable_systemd_homed() {
-    echo "Enabling systemd-homed service"
-    sudo arch-chroot "$WORKDIR" systemctl enable systemd-homed.service || quit_on_err 'Failed to enable systemd-homed'
-    sudo arch-chroot "$WORKDIR" systemctl start systemd-homed.service || quit_on_err 'Failed to start systemd-homed'
+setup_locale_target() {
+  log "Configuring locale: ${OSI_LOCALE}"
+  echo "${OSI_LOCALE} UTF-8" | sudo tee -a "$TARGET/etc/locale.gen" >/dev/null
+  run_in_target "locale-gen" || die "Locale generation failed"
+  [[ -n "${OSI_FORMATS}" ]] && run_in_target "localectl set-locale \"${OSI_FORMATS}\""
 }
 
-# Function to set up locale
-setup_locale() {
-    echo "Generating locale: $OSI_LOCALE"
-    echo "$OSI_LOCALE UTF-8" | sudo tee -a "$WORKDIR/etc/locale.gen" > /dev/null
-    sudo arch-chroot "$WORKDIR" locale-gen || quit_on_err 'Failed to generate locale'
+setup_timezone_target() {
+  log "Setting timezone to ${OSI_TIMEZONE}"
+  run_in_target "ln -sf /usr/share/zoneinfo/${OSI_TIMEZONE} /etc/localtime"
+  run_in_target "timedatectl set-timezone \"${OSI_TIMEZONE}\""
+}
 
-    if [[ -n $OSI_FORMATS ]]; then
-        echo "Setting locale formats: $OSI_FORMATS"
-        sudo arch-chroot "$WORKDIR" localectl set-locale "$OSI_FORMATS" || quit_on_err 'Failed to set locale formats'
+setup_hostname_target() {
+  log "Setting hostname to ${OSI_HOSTNAME}"
+  echo "${OSI_HOSTNAME}" | sudo tee "$TARGET/etc/hostname" >/dev/null
+  run_in_target "hostnamectl set-hostname \"${OSI_HOSTNAME}\""
+}
+
+setup_machine_id_target() {
+  log "Generating machine-id"
+  run_in_target "systemd-machine-id-setup --commit"
+}
+
+setup_user_target() {
+  log "Creating user ${OSI_USER_NAME}"
+  local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
+  local groups_csv=$(IFS=,; echo "${groups[*]}")
+  run_in_target "homectl create \"${OSI_USER_NAME}\" --password=\"${OSI_USER_PASSWORD}\" --shell=\"/bin/bash\" --storage=directory --member-of=\"${groups_csv}\""
+}
+
+set_root_password() {
+  log "Setting root password"
+  echo "root:${OSI_USER_PASSWORD}" | sudo chpasswd -R "$TARGET"
+}
+
+enable_systemd_homed_target() {
+  run_in_target "systemctl enable systemd-homed.service"
+}
+
+setup_services_target() {
+  log "Enabling essential services"
+  local services="sshd NetworkManager systemd-timesyncd ufw plymouth"
+  [[ "${OSI_DESKTOP}" == "gnome" ]] && services+=" gdm"
+  for service in $services; do
+    run_in_target "systemctl enable ${service}"
+  done
+}
+
+configure_ssh_target() {
+  log "Configuring SSH port ${OSI_SSH_PORT}"
+  run_in_target "sed -i 's/^#Port 22/Port ${OSI_SSH_PORT}/' /etc/ssh/sshd_config"
+}
+
+setup_autologin_target() {
+  [[ "${OSI_USER_AUTOLOGIN}" -eq 1 ]] && run_in_target "homectl update \"${OSI_USER_NAME}\" --auto-login"
+}
+
+install_software_target() {
+  [[ -n "${OSI_ADDITIONAL_SOFTWARE}" ]] && run_in_target "pacman -Sy --noconfirm ${OSI_ADDITIONAL_SOFTWARE} shim-signed sbsigntools efitools ufw"
+}
+
+setup_firewall_target() {
+  run_in_target "ufw allow ${OSI_SSH_PORT}"
+  run_in_target "ufw enable"
+}
+
+setup_plymouth_target() {
+  run_in_target "plymouth-set-default-theme -R bgrt-shani"
+}
+
+generate_mok_keys_target() {
+  run_in_target "mkdir -p /usr/share/secureboot/keys"
+  run_in_target '[[ ! -f /usr/share/secureboot/keys/MOK.key ]] && \
+    openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt -subj "/CN=Shani OS Secure Boot Key/" && \
+    openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der && \
+    chmod 0600 /usr/share/secureboot/keys/MOK.key'
+}
+
+sign_efi_binary() {
+  local binary="$1"
+  run_in_target "sbsign --key /usr/share/secureboot/keys/MOK.key --cert /usr/share/secureboot/keys/MOK.crt --output $binary $binary"
+  run_in_target "sbverify --cert /usr/share/secureboot/keys/MOK.crt $binary"
+}
+
+install_secureboot_components_target() {
+  run_in_target "cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI"
+  run_in_target "cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi"
+  run_in_target "cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
+  sign_efi_binary "/boot/efi/EFI/BOOT/grubx64.efi"
+}
+
+enroll_mok_key_target() {
+  run_in_target "echo -e \"${OSI_USER_PASSWORD}\n${OSI_USER_PASSWORD}\" | mokutil --import /usr/share/secureboot/keys/MOK.der"
+}
+
+bypass_mok_prompt_target() {
+  log "Attempting to bypass MOK prompt"
+  run_in_target "mkdir -p /sys/firmware/efi/efivars" || die "Failed to create efivars directory"
+  run_in_target "mount --bind /sys/firmware/efi/efivars /sys/firmware/efi/efivars" || die "efivars bind mount failed"
+  run_in_target 'bash -c "
+    if [[ -f /usr/share/secureboot/keys/MOK.der ]]; then
+      efivar -n MOKList -w -d /usr/share/secureboot/keys/MOK.der  || true;
     fi
+  "'
+  run_in_target "mokutil --disable-validation" || die "Disabling Secure Boot validation failed"
+  run_in_target "umount /sys/firmware/efi/efivars"
 }
 
-# Function to set timezone using systemd
-setup_timezone() {
-    echo "Setting timezone to: $OSI_TIMEZONE"
-    sudo arch-chroot "$WORKDIR" timedatectl set-timezone "$OSI_TIMEZONE" || quit_on_err 'Failed to set timezone'
-}
-
-# Function to create user with systemd-homed
-setup_user() {
-    echo "Creating user: $OSI_USER_NAME"
-
-    # Create the user with homectl
-    sudo arch-chroot "$WORKDIR" homectl create "$OSI_USER_NAME" --password="$OSI_USER_PASSWORD" --shell="$USER_SHELL" || quit_on_err 'Failed to create user with systemd-homed'
-
-    # Add user to groups
-    for group in "${USER_GROUPS[@]}"; do
-        if ! sudo arch-chroot "$WORKDIR" groups "$OSI_USER_NAME" | grep -q "$group"; then
-            sudo arch-chroot "$WORKDIR" homectl add-group "$OSI_USER_NAME" "$group" || quit_on_err "Failed to add user to group: $group"
-        fi
-    done
-}
-
-# Function to set up hostname
-setup_hostname() {
-    echo "Setting hostname to: $OSI_HOSTNAME"
-    sudo arch-chroot "$WORKDIR" hostnamectl set-hostname "$OSI_HOSTNAME" || quit_on_err 'Failed to set hostname'
-}
-
-# Function to set up machine ID
-setup_machine_id() {
-    echo "Generating machine ID"
-    sudo arch-chroot "$WORKDIR" systemd-machine-id-setup || quit_on_err 'Failed to set machine ID'
-}
-
-# Function to enable and start essential services
-setup_services() {
-    local services=("sshd" "NetworkManager" "systemd-timesyncd")  # List of services to enable
-
-    for service in "${services[@]}"; do
-        echo "Enabling and starting service: $service"
-        sudo arch-chroot "$WORKDIR" systemctl enable "$service" || quit_on_err "Failed to enable $service"
-        sudo arch-chroot "$WORKDIR" systemctl start "$service" || quit_on_err "Failed to start $service"
-    done
-}
-
-# Function to configure SSH
-configure_ssh() {
-    echo "Configuring SSH on port: $OSI_SSH_PORT"
-    sudo arch-chroot "$WORKDIR" sed -i "s/#Port 22/Port $OSI_SSH_PORT/" /etc/ssh/sshd_config || quit_on_err 'Failed to set SSH port'
-    sudo arch-chroot "$WORKDIR" systemctl restart sshd || quit_on_err 'Failed to restart SSH service'
-}
-
-# Function to set up auto-login using homectl
-setup_autologin() {
-    if [[ $OSI_USER_AUTOLOGIN -eq 1 ]]; then
-        echo "Setting up auto-login for user: $OSI_USER_NAME"
-
-        # Enable auto-login for the user using homectl
-        sudo arch-chroot "$WORKDIR" homectl set "$OSI_USER_NAME" --autologin || quit_on_err 'Failed to enable auto-login for user with homectl'
-
-        echo "Auto-login setup complete. Please run 'systemctl daemon-reload' and reboot to apply changes."
-    else
-        echo "Auto-login is not enabled for user: $OSI_USER_NAME"
-    fi
-}
-
-
-# Function to install additional software
-install_software() {
-    if [[ -n $OSI_ADDITIONAL_SOFTWARE ]]; then
-        echo "Installing additional software: $OSI_ADDITIONAL_SOFTWARE"
-        sudo arch-chroot "$WORKDIR" pacman -Sy --noconfirm $OSI_ADDITIONAL_SOFTWARE || quit_on_err 'Failed to install additional software'
-    else
-        echo "No additional software specified for installation."
-    fi
-}
-
-# Function to configure the firewall
-setup_firewall() {
-    echo "Setting up firewall..."
-    sudo arch-chroot "$WORKDIR" ufw allow "$OSI_SSH_PORT" || quit_on_err 'Failed to allow SSH port in firewall'
-    sudo arch-chroot "$WORKDIR" ufw enable || quit_on_err 'Failed to enable firewall'
-}
-
-# Function to set Plymouth theme
-setup_plymouth() {
-    echo "Setting Plymouth theme to: bgrt-shani"
-    sudo arch-chroot "$WORKDIR" plymouth-set-default-theme -R bgrt-shani || quit_on_err 'Failed to set Plymouth theme'
-}
-
-# Function to enable GDM for GNOME desktop
-enable_gdm() {
-    if [[ $OSI_DESKTOP == "gnome" ]]; then
-        echo "Enabling GDM for GNOME desktop..."
-        sudo arch-chroot "$WORKDIR" systemctl enable gdm.service || quit_on_err 'Failed to enable GDM'
-    fi
-}
-
-# Function to create Dracut configuration file
-create_dracut_config() {
-    local mok_key="/usr/share/secureboot/keys/MOK.key"       # Path to your MOK and Secure Boot key (same for both)
-    local mok_cert="/usr/share/secureboot/keys/MOK.crt"     # Path to your MOK and Secure Boot certificate (same for both)
-    local splash_image="/usr/share/systemd/bootctl/splash-arch.bmp" # Path to splash image
-    local uefi_stub="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"   # Path to UEFI stub
-
-    echo "Creating Dracut configuration at /etc/dracut.conf.d/shani.conf"
-
-    # Validate existence of required files
-    if [[ ! -f "$mok_key" ]]; then
-        echo "Warning: Secure boot key not found: $mok_key" >&2
-        return 1  # Exit if the key is not found
-    fi
-    if [[ ! -f "$mok_cert" ]]; then
-        echo "Warning: Secure boot certificate not found: $mok_cert" >&2
-        return 1  # Exit if the certificate is not found
-    fi
-    if [[ ! -f "$splash_image" ]]; then
-        echo "Warning: UEFI splash image not found: $splash_image" >&2
-        return 1  # Exit if the splash image is not found
-    fi
-
-    # Create the Dracut configuration file within chroot
-    if sudo arch-chroot "$WORKDIR" test -f /etc/dracut.conf.d/shani.conf; then
-        echo "Warning: Dracut configuration file already exists." >&2
-    else
-        sudo arch-chroot "$WORKDIR" bash -c "cat <<'EOF' > /etc/dracut.conf.d/shani.conf
-compress=\"zstd\"
-add_drivers+=\"i915 amdgpu xe radeon nouveau\"
-add_dracutmodules+=\"btrfs lvm mdraid crypt network plymouth uefi resume\"
-omit_dracutmodules+=\"brltty\"
+create_dracut_config_target() {
+  run_in_target 'cat > /etc/dracut.conf.d/90-shani.conf <<EOF
+compress="zstd"
+add_drivers+=" i915 amdgpu radeon nvidia nvidia_modeset nvidia_uvm nvidia_drm "
+add_dracutmodules+=" btrfs crypt plymouth resume systemd "
+omit_dracutmodules+=" brltty "
 early_microcode=yes
 use_fstab=yes
 hostonly=yes
 hostonly_cmdline=no
 uefi=yes
-uefi_secureboot_cert=\"$mok_cert\"
-uefi_secureboot_key=\"$mok_key\"
-uefi_splash_image=\"$splash_image\"
-uefi_stub=\"$uefi_stub\"
-resume='\"$( [[ \"\$OSI_USE_ENCRYPTION\" -eq 1 ]] && echo \"/dev/mapper/\$SWAPLABEL\" || echo \"/swapfile\")\"'
-EOF" || echo 'Failed to create Dracut configuration file' >&2
-    fi
+uefi_secureboot_cert="/usr/share/secureboot/keys/MOK.crt"
+uefi_secureboot_key="/usr/share/secureboot/keys/MOK.key"
+uefi_splash_image="/usr/share/systemd/bootctl/splash-arch.bmp"
+uefi_stub="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
+EOF'
 }
 
-
-# Function to get the UUID of the root filesystem and check for encryption
-get_uuid_and_encryption() {
-    local source_device
-    source_device="$(sudo arch-chroot "$WORKDIR" df --output=source / | tail -n1)"
-    
-    # Get UUID and check if it's LUKS encrypted
-    local blkid_info
-    blkid_info=$(sudo arch-chroot "$WORKDIR" blkid "$source_device")
-    
-    # Extract UUID
-    local uuid
-    uuid=$(echo "$blkid_info" | awk -F'UUID=' '{ print $2 }' | awk '{ print $1 }' | tr -d '"')
-
-    # Check for LUKS encryption
-    if echo "$blkid_info" | grep -q 'luks'; then
-        echo "$uuid" "luks"
-    else
-        echo "$uuid" "plain"
-    fi
+get_kernel_version() {
+  run_in_target "ls -1 /usr/lib/modules | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1"
 }
 
-# Function to generate the kernel command line configuration
-generate_cmdline() {
-    local root_name="$1"
-    local subvol="$2"  # Add subvolume parameter
-    local uuid_and_encryption
-    uuid_and_encryption=$(get_uuid_and_encryption)
-    local uuid
-    uuid=$(echo "$uuid_and_encryption" | awk '{ print $1 }')
-    local encryption_type
-    encryption_type=$(echo "$uuid_and_encryption" | awk '{ print $2 }')
+generate_uki_entry() {
+  local slot="$1"
+  local cmdline="quiet splash rootflags=subvol=deployment/system/${slot}"
+  
+  if run_in_target "[ -e /dev/mapper/${ROOTLABEL} ]"; then
+    local luks_uuid=$(run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}")
+    cmdline+=" rd.luks.uuid=${luks_uuid} rd.luks.options=${luks_uuid}=tpm2-device=auto"
+  fi
+  
+  if run_in_target "[ -f /deployment/data/swap/swapfile ]"; then
+    local root_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
+    local swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /deployment/data/swap/swapfile | awk '{print \$NF}'")
+    cmdline+=" resume=UUID=${root_uuid} resume_offset=${swap_offset}"
+  fi
 
-    # Start the command line with common options
-    local cmdline="quiet splash root=UUID=${uuid} rootflags=subvol=${subvol}"
-
-    # Add LUKS options if encryption is detected
-    if [[ "$encryption_type" == "luks" ]]; then
-        local luks_uuid
-        luks_uuid=$(sudo arch-chroot "$WORKDIR" blkid | grep "$uuid" | awk -F'/dev/mapper/' '{ print $2 }' | awk '{ print $1 }' | tr -d '"')
-        cmdline+=" rd.luks.uuid=${luks_uuid} rd.luks.options=${luks_uuid}=tpm2-device=auto"
-    fi
-
-    # Output to the configuration file inside chroot
-    echo "kernel_cmdline=\"${cmdline}\"" | sudo tee "$WORKDIR/etc/dracut.conf.d/dracut-cmdline-${root_name}.conf" > /dev/null
-
-    echo "Generated command line configuration for ${root_name}."
-}
-
-# Function to generate UEFI images
-generate_uefi_image() {
-    local root_name="$1"
-    local subvol="$2"  # Add subvolume parameter
-    local image_name="shanios-${root_name,,}.efi"  # Set image name directly
-    local cmdline
-    local efi_path="/boot/efi/EFI/Linux"
-
-    # Retrieve the command line from the configuration file
-    cmdline=$(sudo arch-chroot "$WORKDIR" bash -c "source /etc/dracut.conf.d/dracut-cmdline-${root_name}.conf && echo \$kernel_cmdline")
-
-    echo ":: Building unified kernel image for ${root_name}..."
-    
-    # Create the UEFI image with the desired name
-    if ! sudo arch-chroot "$WORKDIR" dracut -q -f --uefi --cmdline "${cmdline}" "$esp/EFI/Linux/${image_name}"; then
-        echo "Error: Failed to build unified kernel image for ${root_name}." >&2
-        return 1
-    fi
-
-    echo "Generated UEFI image: ${image_name}."
-
-}
-
-
-remove_uefi_images() {
-    local efi_path
-    local images=("shanios-roota.efi" "shanios-rootb.efi")
-
-    efi_path="$(sudo arch-chroot "$WORKDIR" bootctl -p)"
-    echo ":: Removing UEFI images..."
-
-    for image in "${images[@]}"; do
-        if sudo arch-chroot "$WORKDIR" [[ -e "${efi}/EFI/Linux/${image}" ]]; then
-            sudo arch-chroot "$WORKDIR" rm -f "${efi}/EFI/Linux/${image}"
-            echo "Removed: ${image}"
-        else
-            echo "Image not found: ${image}"
-        fi
-    done
-}
-
-# Function to create initramfs with dracut inside arch-chroot
-create_initramfs() {
-    echo "Creating initramfs images using dracut..."
-    generate_uefi_image "roota" "deployment/shared/roota"
-    generate_uefi_image "rootb" "deployment/shared/rootb"
-}
-
-# Function to install systemd-boot bootloader
-install_bootloader() {
-    local mok_key="/usr/share/secureboot/keys/MOK.key"       # Path to your MOK and Secure Boot key
-    local mok_cert="/usr/share/secureboot/keys/MOK.crt"       # Path to your MOK and Secure Boot certificate
-    local mok_cer="/usr/share/secureboot/keys/MOK.cer"        # Path to your MOK certificate file
-
-    echo "Installing systemd-boot bootloader..."
-
-    # Execute all commands inside the arch-chroot environment
-    sudo arch-chroot "$WORKDIR" bash -c "
-        set -e  # Exit on error
-
-        # Define paths
-        mok_key=\"$mok_key\"
-        mok_cert=\"$mok_cert\"
-        mok_cer=\"$mok_cer\"
-
-        # Create bootloader directory and configuration file
-        mkdir -p /boot/loader
-        cat <<'EOF' > /boot/loader/loader.conf
-default shanios-roota.efi
-timeout 5
-console-mode max
-EOF
-
-        # Install bootloader using bootctl
-        bootctl install || { echo 'Failed to install systemd-boot'; exit 1; }
-
-        # Get the EFI system partition directory
-        efi_path=\$(bootctl -p)
-        BOOT_LOADER_EFI=\"\${efi_path}/EFI/systemd/systemd-bootx64.efi\"
-        SHIM_TARGET_EFI=\"\${efi_path}/EFI/BOOT/grubx64.efi\" 
-
-        # Check if the bootloader and shim are identical
-        if diff -q \"\$BOOT_LOADER_EFI\" \"\$SHIM_TARGET_EFI\"; then
-            echo 'info: no changes, nothing to do'
-            exit 0
-        fi
-
-        # Copy the bootloader as the EFI shim target
-        cp \"\$BOOT_LOADER_EFI\" \"\$SHIM_TARGET_EFI\" && echo 'info: bootloader installed as EFI shim target'
-
-        # Copy shim and MOK certificate
-        echo 'Copying shim and certificate...'
-        if [[ ! -f /usr/share/shim-signed/shimx64.efi || ! -f /usr/share/shim-signed/mmx64.efi ]]; then
-            echo 'Shim files not found' && exit 1
-        fi
-
-        cp -t \"\$efi_path\" /usr/share/shim-signed/{shim,mm}x64.efi || { echo 'Failed to copy shim and mm files'; exit 1; }
-        cp \"\$mok_cer\" \"\$efi_path\" || { echo 'Failed to copy MOK certificate'; exit 1; }
-        
-        # Sign the grub EFI file if it exists
-        if [[ -f \"\${efi_path}/EFI/BOOT/grubx64.efi\" ]]; then
-            sbsign --key \"\$mok_key\" --cert \"\$mok_cert\" --output \"\${efi_path}/EFI/BOOT/grubx64.efi\" \"\${efi_path}/EFI/BOOT/grubx64.efi\" || { echo 'Failed to sign grubx64.efi'; exit 1; }
-        else
-            echo 'grubx64.efi not found for signing' && exit 1
-        fi
-
-        # Define the EFI binaries to sign
-        efi_binaries=(\"EFI/Linux/shanios-roota.efi\" \"EFI/Linux/shanios-rootb.efi\")  # Adjusted path
-
-        # Sign each EFI binary
-        for efi_binary in \"\${efi_binaries[@]}\"; do
-            echo \"Signing \$efi_binary...\"
-            sbsign --key \"\$mok_key\" --cert \"\$mok_cert\" --output \"\$efi_path/\$efi_binary\" \"\$efi_path/\$efi_binary\" || { echo \"Failed to sign \$efi_binary\"; exit 1; }
-        done
-
-        # Enroll MOK and disable validation
-        mokutil --import \"\$mok_cer\" || error_exit 'Failed to import MOK'
-        mokutil --disable-validation || log 'Failed to disable Secure Boot validation'
-    "
-}
-
-
-
-# Function to create boot entries for both subvolumes within arch-chroot
-create_boot_entries() {
-    for root in "a" "b"; do
-        sudo arch-chroot "$WORKDIR" bash -c "cat <<EOF > /boot/loader/entries/shani-${root}.conf
-title Shani OS - deployment (Root ${root^^})
-linux /boot/vmlinuz-linux
-initrd /boot/amd-ucode.img
-initrd /boot/intel-ucode.img
-initrd /boot/initramfs-linux.img
-options \$( [[ \"\$OSI_USE_ENCRYPTION\" -eq 1 ]] && \
-    echo \"rd.auto=0 rd.luks.name=\$ROOTLABEL=\$ROOTLABEL root=/dev/mapper/\$ROOTLABEL rw rootflags=subvol=/deployment/shared/root${root}\" || \
-    echo \"root=/dev/disk/by-label/\$ROOTLABEL ro rootflags=subvol=/deployment/shared/root${root}\")
+  local cmdfile="$([[ $slot == $(run_in_target "cat /deployment/current-slot") ]] && echo $CMDLINE_FILE_CURRENT || echo $CMDLINE_FILE_CANDIDATE)"
+  run_in_target "echo '${cmdline}' | tee ${cmdfile} >/dev/null"
+  
+  local kernel_version=$(get_kernel_version)
+  local uki_path="/boot/${OS_NAME}-${slot}.efi"
+  run_in_target "dracut --force --uefi --kver ${kernel_version} --cmdline \"${cmdline}\" ${uki_path}"
+  sign_efi_binary "${uki_path}"
+  
+  run_in_target "cat > ${UKI_BOOT_ENTRY}/shanios-${slot}.conf <<EOF
+title   shanios-${slot} (${BASE_VERSION})
+efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
+options \$kernel_cmdline
 EOF"
-    done
 }
 
-# Function to set up /etc/fstab in the chroot environment
-setup_fstab() {
-    echo "Setting up /etc/fstab in chroot..."
-    
-    # Use arch-chroot to execute commands within the chroot environment
-    sudo arch-chroot "$WORKDIR" /bin/bash <<EOF
-cat <<EOL > /etc/fstab
-LABEL=$ROOTLABEL                /home         btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/home  0 0
-LABEL=$ROOTLABEL                /roota        btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/roota  0 0
-LABEL=$ROOTLABEL                /rootb        btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/rootb  0 0
-LABEL=$ROOTLABEL                /var/lib/flatpak btrfs   defaults,noatime,compress=zstd,subvol=deployment/shared/flatpak  0 0
-# Overlay Filesystem
-overlay                         /etc          overlay  lowerdir=/deployment/shared/etc-writable,upperdir=/deployment/overlay/upper,workdir=/deployment/overlay/work  0 0
-# EFI Boot Partition
-LABEL=$BOOTLABEL                /boot         vfat    defaults,noatime                                 0 0
-# Temporary filesystems
-tmpfs                           /var/tmp      tmpfs   defaults,noatime                                 0 0
-tmpfs                           /var/log      tmpfs   defaults,noatime                                 0 0
-tmpfs                           /run          tmpfs   defaults,noatime                                 0 0
-# Btrfs swapfile
-/swapfile                      swap          swap    defaults                                         0 0
-EOL
-EOF
-
-    # Check if the command was successful
-    [[ $? -ne 0 ]] && quit_on_err 'Failed to set up /etc/fstab in chroot.'
+main() {
+  mount_target
+  mount_overlay
+  
+  setup_locale_target
+  setup_timezone_target
+  setup_hostname_target
+  setup_machine_id_target
+  setup_user_target
+  set_root_password
+  enable_systemd_homed_target
+  setup_services_target
+  configure_ssh_target
+  setup_autologin_target
+  install_software_target
+  setup_firewall_target
+  setup_plymouth_target
+  
+  generate_mok_keys_target
+  install_secureboot_components_target
+  enroll_mok_key_target
+  create_dracut_config_target
+  
+  local current_slot=$(run_in_target "cat /deployment/current-slot")
+  local candidate_slot=$([[ $current_slot == "blue" ]] && echo "green" || echo "blue")
+  
+  generate_uki_entry "$current_slot"
+  generate_uki_entry "$candidate_slot"
+  
+  run_in_target "echo '${BASE_VERSION}' > /etc/shani-version"
+  log "Configuration completed successfully!"
 }
 
-
-# Main execution flow
-check_sudo
-check_env_vars
-mount_overlay
-copy_overlay
-sudo arch-chroot "$WORKDIR" dconf update || quit_on_err 'Failed to update dconf'
-# Function calls in sequence
-enable_systemd_homed
-setup_locale
-setup_timezone
-setup_user
-setup_hostname
-setup_machine_id
-setup_services
-configure_ssh
-setup_autologin 
-install_software
-setup_firewall
-setup_plymouth
-enable_gdm
-create_dracut_config
-create_initramfs  # Create the initramfs images
-install_bootloader  # Call the bootloader installation function
-setup_fstab  # Setup fstab for mounting
-
-echo "Configuration completed successfully!"
-
+main

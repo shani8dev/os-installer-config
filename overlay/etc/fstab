@@ -26,5 +26,4 @@ tmpfs                              /var/log        tmpfs   defaults,noatime 0 0
 tmpfs                              /run            tmpfs   defaults,noatime 0 0
 
 # Btrfs swapfile (if created during installation)
-/swapfile                          swap            swap    defaults 0 0
-
+/deployment/shared/swapfile/swapfile swap swap defaults 0 0 # Swap entry

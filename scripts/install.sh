@@ -1,135 +1,116 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# install.sh – Disk partitioning, filesystem creation, and blue-green layout.
+set -Eeuo pipefail
+IFS=$'\n\t'
+trap 'echo "[ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
 
-set -o pipefail
+### Configuration
+OS_NAME="shanios"
+BUILD_VERSION="$(date +%Y%m%d)"
+OSIDIR="/etc/os-installer"
+ROOTLABEL="shani_root"
+BOOTLABEL="shani_boot"
+BTRFS_TOP_OPTS="defaults,noatime"
+BTRFS_MOUNT_OPTS="defaults,noatime,compress=zstd,space_cache=v2,autodefrag"
+ROOTFSZST_SOURCE="/run/archiso/bootmnt/arch/x86_64/rootfs.zst"
+FLATPAKFS_SOURCE="/run/archiso/bootmnt/arch/x86_64/flatpakfs.zst"
+SWAPFILE_REL_PATH="swap/swapfile"  # Under /deployment/data
+SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{printf "%dM", int($2 * 1.5)}')
+BTRFS_TARGET=""
 
-# Function to handle errors
-quit_on_err() {
-    echo "$1" >&2
-    exit 1
+# Subvolume paths
+DATA_SUBVOL="deployment/data"
+SYSTEM_SUBVOL="deployment/system"
+BLUE_SLOT="${SYSTEM_SUBVOL}/blue"
+GREEN_SLOT="${SYSTEM_SUBVOL}/green"
+
+echo "[SETUP] Starting disk setup..."
+
+do_partitioning() {
+  echo "[SETUP] Partitioning disk at $OSI_DEVICE_PATH"
+  if [[ $OSI_DEVICE_IS_PARTITION -eq 0 ]]; then
+    if [[ $OSI_DEVICE_PATH =~ nvme[0-9]n[0-9]$ ]]; then
+      partition_prefix="${OSI_DEVICE_PATH}p"
+    else
+      partition_prefix="$OSI_DEVICE_PATH"
+    fi
+    sudo sfdisk "$OSI_DEVICE_PATH" < "$OSIDIR/bits/part.sfdisk" || { echo "Partitioning failed"; exit 1; }
+    ROOT_PARTITION="${partition_prefix}2"
+  else
+    ROOT_PARTITION="$OSI_DEVICE_PATH"
+  fi
 }
 
-# Constants and directories setup
-rootlabel='shani_root'
-bootlabel='shani_boot'
-btrfs_options='defaults,noatime,compress=zstd'  # Btrfs options
-rootfszst_source='/run/archiso/bootmnt/arch/x86_64/rootfs.zst'
-squashfs_source='/run/archiso/bootmnt/arch/x86_64/flatpackfs.sfs'
-overlaydir='/mnt/deployment/overlay'  # Overlay directory in /mnt
-swapfile_size=$(free -m | awk '/^Mem:/{print $2}')  # Size of RAM in MB
-
-# Sanity check for required variables
-required_vars=(OSI_LOCALE OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION OSI_USE_ENCRYPTION OSI_ENCRYPTION_PIN)
-for var in "${required_vars[@]}"; do
-    [[ -z ${!var+x} ]] && quit_on_err "$var not set"
-done
-
-# Check if something is already mounted to /mnt
-mountpoint -q "/mnt" && quit_on_err "/mnt is already a mountpoint, unmount this directory and try again"
-
-# Write partition table to the disk unless manual partitioning is used
-if [[ $OSI_DEVICE_IS_PARTITION -eq 0 ]]; then
-    sudo sfdisk "$OSI_DEVICE_PATH" < "$osidir/bits/part.sfdisk" || quit_on_err 'Failed to write partition table to disk'
-fi
-
-# Determine the partition path based on device type
-partition_path="$OSI_DEVICE_PATH"
-[[ $OSI_DEVICE_IS_PARTITION -eq 0 ]] && partition_path="${OSI_DEVICE_PATH}p"
-
-# Create FAT filesystem on EFI partition
-create_fat_filesystem() {
-    sudo mkfs.fat -F32 "$1" -n "$bootlabel" || quit_on_err "Failed to create FAT filesystem on $1"
+create_filesystems() {
+  echo "[SETUP] Creating FAT32 on EFI partition $OSI_DEVICE_EFI_PARTITION"
+  sudo mkfs.fat -F32 "$OSI_DEVICE_EFI_PARTITION" -n "$BOOTLABEL" || { echo "FAT creation failed"; exit 1; }
+  if [[ $OSI_USE_ENCRYPTION -eq 1 ]]; then
+    echo "[SETUP] Setting up LUKS on $ROOT_PARTITION"
+    echo "$OSI_ENCRYPTION_PIN" | sudo cryptsetup -q luksFormat "$ROOT_PARTITION" || exit 1
+    echo "$OSI_ENCRYPTION_PIN" | sudo cryptsetup open "$ROOT_PARTITION" "$ROOTLABEL" || exit 1
+    BTRFS_TARGET="/dev/mapper/$ROOTLABEL"
+  else
+    BTRFS_TARGET="$ROOT_PARTITION"
+  fi
+  echo "[SETUP] Creating Btrfs on $BTRFS_TARGET"
+  sudo mkfs.btrfs -f -L "$ROOTLABEL" "$BTRFS_TARGET" || { echo "Btrfs creation failed"; exit 1; }
 }
 
-# Create LUKS partition
-create_luks_partition() {
-    echo "$OSI_ENCRYPTION_PIN" | sudo cryptsetup -q luksFormat "$1" || quit_on_err "Failed to create LUKS partition on $1"
-    echo "$OSI_ENCRYPTION_PIN" | sudo cryptsetup open "$1" "$rootlabel" - || quit_on_err 'Failed to unlock LUKS partition'
+mount_top_level() {
+  echo "[SETUP] Mounting Btrfs top-level on /mnt"
+  sudo mount -o "$BTRFS_TOP_OPTS" "$BTRFS_TARGET" /mnt || { echo "Mounting failed"; exit 1; }
 }
 
-# Create Btrfs filesystem
-create_btrfs_filesystem() {
-    sudo mkfs.btrfs -f -L "$rootlabel" "$1" || quit_on_err "Failed to create Btrfs partition on $1"
-    sudo mount -o "$btrfs_options" "$1" "/mnt" || quit_on_err "Failed to mount Btrfs root partition to /mnt"
+create_common_subvolumes() {
+  local subs=("home" "etc-writable" "flatpak" "overlay" "downloads" "swap" "containers")
+  sudo mkdir -p "/mnt/${DATA_SUBVOL}"
+  for sub in "${subs[@]}"; do
+    echo "[SETUP] Creating data subvolume: $sub"
+    sudo btrfs subvolume create "/mnt/${DATA_SUBVOL}/$sub" || { echo "Creation of $sub failed"; exit 1; }
+  done
 }
 
-# Mount the boot partition
+extract_system_image() {
+  echo "[SETUP] Extracting system image into blue slot (active)"
+  sudo mkdir -p "/mnt/${SYSTEM_SUBVOL}"
+  sudo zstdcat "$ROOTFSZST_SOURCE" | sudo btrfs receive "/mnt/${BLUE_SLOT}" || { echo "Extraction failed"; exit 1; }
+  echo "blue" | sudo tee "/mnt/deployment/current-slot" || { echo "Failed to set active slot"; exit 1; }
+}
+
+receive_flatpak() {
+  echo "[SETUP] Receiving Flatpak image into data/flatpak"
+  sudo mkdir -p "/mnt/${DATA_SUBVOL}/flatpak"
+  zstd -d --long -T0 "$FLATPAKFS_SOURCE" -c | sudo btrfs receive "/mnt/${DATA_SUBVOL}/flatpak" || { echo "Flatpak receiving failed"; exit 1; }
+}
+
+snapshot_blue_to_green() {
+  echo "[SETUP] Creating snapshot of blue slot to initialize green slot"
+  sudo btrfs subvolume snapshot "/mnt/${BLUE_SLOT}" "/mnt/${GREEN_SLOT}" || { echo "Snapshot failed"; exit 1; }
+}
+
 mount_boot_partition() {
-    sudo mount --mkdir "$1" "/mnt/boot" || quit_on_err 'Failed to mount boot'
+  echo "[SETUP] Mounting EFI partition at /mnt/boot/efi"
+  sudo mount --mkdir "$OSI_DEVICE_EFI_PARTITION" /mnt/boot/efi || { echo "EFI mount failed"; exit 1; }
 }
 
-# Create a Btrfs swapfile with a specified size
-create_btrfs_swapfile() {
-    local swapfile_path="/mnt/swapfile"
-    local swapfile_label="shani_swap"  # Change the label as needed
-
-    # Create the swapfile of size equal to RAM size
-    sudo fallocate -l "${swapfile_size}M" "$swapfile_path" || quit_on_err "Failed to create swapfile at $swapfile_path"
-
-    # Enable CoW (Copy-on-Write) for the swapfile
-    sudo chattr +C "$swapfile_path" || quit_on_err "Failed to enable CoW for swapfile"
-
-    # Create the Btrfs swapfile with the specified label
-    sudo btrfs filesystem mkswap -L "$swapfile_label" "$swapfile_path" || quit_on_err "Failed to create swap on $swapfile_path"
-
-    # Enable the swap
-    sudo swapon "$swapfile_path" || quit_on_err "Failed to enable swap on $swapfile_path"
-    
-    echo "Btrfs swapfile created and enabled at $swapfile_path with label $swapfile_label."
+create_swapfile() {
+  echo "[SETUP] Creating Btrfs swapfile in data/swap"
+  sudo mkdir -p "/mnt/${DATA_SUBVOL}/${SWAPFILE_REL_PATH%/*}"
+  sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/${DATA_SUBVOL}/${SWAPFILE_REL_PATH}" || { echo "Swapfile creation failed"; exit 1; }
+  sudo swapon "/mnt/${DATA_SUBVOL}/${SWAPFILE_REL_PATH}" || { echo "Swap activation failed"; exit 1; }
 }
 
-# Handle encryption and partitioning
-if [[ $OSI_USE_ENCRYPTION -eq 1 ]]; then
-    if [[ $OSI_DEVICE_IS_PARTITION -eq 0 ]]; then
-        create_fat_filesystem "${partition_path}1"
-        create_luks_partition "${partition_path}2"
-    else
-        create_fat_filesystem "$OSI_DEVICE_EFI_PARTITION"
-        create_luks_partition "$OSI_DEVICE_PATH"
-    fi
-    create_btrfs_filesystem "/dev/mapper/$rootlabel"
-else
-    if [[ $OSI_DEVICE_IS_PARTITION -eq 0 ]]; then
-        create_fat_filesystem "${partition_path}1"
-        create_btrfs_filesystem "${partition_path}2"
-    else
-        create_fat_filesystem "$OSI_DEVICE_EFI_PARTITION"
-        create_btrfs_filesystem "$OSI_DEVICE_PATH"
-    fi
-    mount_boot_partition "${partition_path}1"
-fi
+do_setup() {
+  do_partitioning
+  create_filesystems
+  mount_top_level
+  create_common_subvolumes
+  extract_system_image
+  receive_flatpak
+  snapshot_blue_to_green
+  mount_boot_partition
+  create_swapfile
+  echo "[SETUP] Disk setup and blue-green configuration completed successfully!"
+}
 
-# Ensure partitions are mounted
-for mountpoint in "/mnt" "/mnt/boot"; do
-    mountpoint -q "$mountpoint" || quit_on_err "No volume mounted to $mountpoint"
-done
-
-# Create OverlayFS directories
-sudo mkdir -p "$overlaydir/{work,upper}" || quit_on_err 'Failed to create OverlayFS directories'
-
-# Create Btrfs subvolumes for writable directories
-subvolumes=("deployment/shared/home" "deployment/shared/roota" "deployment/shared/rootb" "deployment/shared/flatpak" "deployment/shared/etc-writable" "deployment/shared/swapfile")
-for subvolume in "${subvolumes[@]}"; do
-    sudo btrfs subvolume create "/mnt/$subvolume" || quit_on_err "Failed to create $subvolume subvolume"
-done
-
-# Create the swapfile
-create_btrfs_swapfile
-
-############################################
-# Extract the System Image and Flatpak FS
-############################################
-
-# --- Extract System Image ---
-# The system image (*.zst) is extracted into the active root subvolume.
-echo "Extracting system image from $rootzst_source to /mnt/deployment/shared/roota..."
-sudo mkdir -p /mnt/deployment/shared/roota
-sudo zstd -d < $rootzst_source | sudo btrfs receive /mnt/deployment/shared/roota || quit_on_err "Failed to extract system image"
-
-# Unpack the flatpak filesystem from SquashFS into the subvolume
-sudo unsquashfs -f -d "/mnt/deployment/shared/flatpak" "$squashfs_source" || quit_on_err "Failed to unpack $squashfs_source"
-
-# Create a snapshot of roota as rootb after unsquashing
-sudo btrfs subvolume snapshot "/mnt/deployment/shared/roota" "/mnt/deployment/shared/rootb" || quit_on_err "Failed to create snapshot of roota as rootb"
-
-echo "Setup completed successfully!"
-
+do_setup
