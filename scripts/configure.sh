@@ -11,8 +11,6 @@
 #   OSI_USE_ENCRYPTION, OSI_ENCRYPTION_PIN, OSI_USER_NAME, OSI_USER_USERNAME,
 #   OSI_USER_AUTOLOGIN, OSI_USER_PASSWORD, OSI_FORMATS, OSI_TIMEZONE, OSI_DESKTOP,
 #   OSI_HOSTNAME, OSI_KEYBOARD_LAYOUT
-#
-# Requires root privileges.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -47,10 +45,10 @@ cleanup() {
         echo "[CONFIG][INFO] Unmounting target and its bind mounts..."
         for fs in run dev sys proc; do
             if mountpoint -q "$TARGET/$fs"; then
-                umount -R "$TARGET/$fs" || echo "[CONFIG][WARN] Failed to unmount $TARGET/$fs"
+                sudo umount -R "$TARGET/$fs" || echo "[CONFIG][WARN] Failed to unmount $TARGET/$fs"
             fi
         done
-        umount -R "$TARGET" || echo "[CONFIG][WARN] Failed to unmount $TARGET"
+        sudo umount -R "$TARGET" || echo "[CONFIG][WARN] Failed to unmount $TARGET"
     fi
 }
 
@@ -66,19 +64,32 @@ check_prerequisites() {
 }
 check_prerequisites
 
-# Check for root privileges.
-if [[ $EUID -ne 0 ]]; then
-    echo "[CONFIG][ERROR] This script must be run as root" >&2
-    exit 1
-fi
+check_env() {
+  local missing_vars=()
+  
+  # Full list of required variables
+  local required_vars=(OSI_LOCALE OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION \
+                       OSI_USE_ENCRYPTION OSI_USER_NAME OSI_USER_USERNAME OSI_USER_AUTOLOGIN \
+                       OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE OSI_DESKTOP OSI_HOSTNAME OSI_KEYBOARD_LAYOUT)
 
-# Check required environment variables.
-required_vars=(OSI_LOCALE OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION \
-               OSI_USE_ENCRYPTION OSI_ENCRYPTION_PIN OSI_USER_NAME OSI_USER_USERNAME OSI_USER_AUTOLOGIN \
-               OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE OSI_DESKTOP OSI_HOSTNAME OSI_KEYBOARD_LAYOUT)
-for var in "${required_vars[@]}"; do
-    [[ -z "${!var:-}" ]] && { echo "[CONFIG][ERROR] Environment variable $var is not set"; exit 1; }
-done
+  for var in "${required_vars[@]}"; do
+    [ -z "${!var:-}" ] && missing_vars+=("$var")
+  done
+
+  # Conditionally check OSI_ENCRYPTION_PIN if encryption is enabled
+  if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
+    missing_vars+=("OSI_ENCRYPTION_PIN")
+  fi
+
+  # Print errors and exit if necessary
+  if [ ${#missing_vars[@]} -gt 0 ]; then
+    log_error "Missing required environment variables: ${missing_vars[*]}"
+    exit 1
+  fi
+}
+
+# Run the checks
+check_env
 
 # Logging functions
 log_info() { echo "[CONFIG][INFO] $*"; }
@@ -87,14 +98,14 @@ die() { echo "[CONFIG][ERROR] $*" >&2; exit 1; }
 # get_active_slot: Temporarily mount the Btrfs top‐level (subvolid=5) to read the slot marker.
 get_active_slot() {
     local temp_mount="/mnt_top"
-    mkdir -p "$temp_mount"
-    mount -o subvolid=5 "/dev/disk/by-label/${ROOTLABEL}" "$temp_mount" || die "Failed to mount Btrfs top‐level"
+    sudo mkdir -p "$temp_mount"
+    sudo mount -o subvolid=5 "/dev/disk/by-label/${ROOTLABEL}" "$temp_mount" || die "Failed to mount Btrfs top‐level"
     if [[ ! -f "$temp_mount${CURRENT_SLOT_FILE}" ]]; then
-        umount "$temp_mount"
+        sudo umount "$temp_mount"
         die "Active slot marker not found at ${CURRENT_SLOT_FILE}"
     fi
     ACTIVE_SLOT=$(cat "$temp_mount${CURRENT_SLOT_FILE}")
-    umount "$temp_mount"
+    sudo umount "$temp_mount"
     echo "$ACTIVE_SLOT"
 }
 
@@ -102,30 +113,30 @@ get_active_slot() {
 mount_target() {
     ACTIVE_SLOT=$(get_active_slot)
     log_info "Mounting active system slot '${ACTIVE_SLOT}' from ${SYSTEM_SUBVOL}/${ACTIVE_SLOT} to ${TARGET}"
-    mount -o "subvol=${SYSTEM_SUBVOL}/${ACTIVE_SLOT}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET" \
+    sudo mount -o "subvol=${SYSTEM_SUBVOL}/${ACTIVE_SLOT}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET" \
       || die "Failed to mount active system"
     for fs in proc sys dev run; do
-        mount --rbind "/$fs" "$TARGET/$fs" || die "Failed to bind mount /$fs"
+        sudo mount --rbind "/$fs" "$TARGET/$fs" || die "Failed to bind mount /$fs"
     done
-    mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" "$TARGET/boot/efi" || die "EFI mount failed"
+    sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" "$TARGET/boot/efi" || die "EFI mount failed"
 }
 
 # mount_data_subvolume: Mount the data subvolume for persistent files.
 mount_data_subvolume() {
     log_info "Mounting data subvolume at ${TARGET}${DATA_SUBVOL}"
-    mkdir -p "$TARGET${DATA_SUBVOL}"  # Ensure the full mount point exists
-    mount -o "subvol=${DATA_SUBVOL}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET${DATA_SUBVOL}" \
+    sudo mkdir -p "$TARGET${DATA_SUBVOL}"
+    sudo mount -o "subvol=${DATA_SUBVOL}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET${DATA_SUBVOL}" \
       || die "Failed to mount data subvolume"
 }
 
 # run_in_target: Execute a command inside the chroot environment.
 run_in_target() {
-    arch-chroot "$TARGET" /bin/bash -e -c "$1"
+    sudo arch-chroot "$TARGET" /bin/bash -e -c "$1"
 }
 
 setup_locale_target() {
     log_info "Setting locale to ${OSI_LOCALE}"
-    echo "LANG=${OSI_LOCALE}" > "$TARGET/etc/locale.conf"
+    echo "LANG=${OSI_LOCALE}" | sudo tee "$TARGET/etc/locale.conf" > /dev/null
     run_in_target "localectl set-locale LANG='${OSI_LOCALE}'"
     [[ -n "${OSI_FORMATS}" ]] && run_in_target "localectl set-locale '${OSI_FORMATS}'"
 }
@@ -134,7 +145,7 @@ setup_keyboard_target() {
     log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
     run_in_target "localectl set-keymap '${OSI_KEYBOARD_LAYOUT}'"
     run_in_target "localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
-    echo "KEYMAP=${OSI_KEYBOARD_LAYOUT}" > "$TARGET/etc/vconsole.conf"
+    echo "KEYMAP=${OSI_KEYBOARD_LAYOUT}" | sudo tee "$TARGET/etc/vconsole.conf" > /dev/null
 }
 
 setup_timezone_target() {
@@ -142,17 +153,17 @@ setup_timezone_target() {
     if [[ ! -f "$TARGET/usr/share/zoneinfo/${OSI_TIMEZONE}" ]]; then
         die "Invalid timezone: ${OSI_TIMEZONE}"
     fi
-    ln -sf "/usr/share/zoneinfo/${OSI_TIMEZONE}" "$TARGET/etc/localtime"
+    sudo ln -sf "/usr/share/zoneinfo/${OSI_TIMEZONE}" "$TARGET/etc/localtime"
     if run_in_target "command -v timedatectl &>/dev/null"; then
         run_in_target "timedatectl set-timezone '${OSI_TIMEZONE}'" || die "Failed to set timezone"
     else
-        echo "${OSI_TIMEZONE}" > "$TARGET/etc/timezone"
+        echo "${OSI_TIMEZONE}" | sudo tee "$TARGET/etc/timezone" > /dev/null
     fi
 }
 
 setup_hostname_target() {
     log_info "Setting hostname to ${OSI_HOSTNAME}"
-    echo "${OSI_HOSTNAME}" > "$TARGET/etc/hostname"
+    echo "${OSI_HOSTNAME}" | sudo tee "$TARGET/etc/hostname" > /dev/null
     run_in_target "hostnamectl set-hostname '${OSI_HOSTNAME}'"
 }
 
@@ -192,12 +203,13 @@ setup_autologin_target() {
             run_in_target "homectl update '${OSI_USER_USERNAME}' --auto-login" || die "Autologin setup failed"
         else
             log_info "Setting up autologin via systemd"
-            mkdir -p "$TARGET/etc/systemd/system/getty@tty1.service.d"
-            cat > "$TARGET/etc/systemd/system/getty@tty1.service.d/autologin.conf" <<EOF
+            sudo mkdir -p "$TARGET/etc/systemd/system/getty@tty1.service.d"
+            cat > /tmp/autologin.conf <<EOF
 [Service]
 ExecStart=
 ExecStart=-/usr/bin/agetty --autologin ${OSI_USER_USERNAME} --noclear %I \$TERM
 EOF
+            sudo mv /tmp/autologin.conf "$TARGET/etc/systemd/system/getty@tty1.service.d/autologin.conf"
         fi
     fi
 }
@@ -335,7 +347,7 @@ generate_uki_entry() {
     else
         current_slot_file="$CMDLINE_FILE_CANDIDATE"
     fi
-    echo "$cmdline" > "$TARGET/$current_slot_file"
+    echo "$cmdline" | sudo tee "$TARGET/$current_slot_file" > /dev/null
     
     # Generate the UKI image.
     local kernel_version

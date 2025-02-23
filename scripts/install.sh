@@ -37,12 +37,25 @@ done
 
 # Check required environment variables
 check_env() {
-  local missing=()
-  for var in OSI_DEVICE_PATH OSI_DEVICE_EFI_PARTITION OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION; do
-    [[ -z "${!var:-}" ]] && missing+=("$var")
+  local missing_vars=()
+  
+  # Essential variables
+  local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_EFI_PARTITION OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
+
+  for var in "${required_vars[@]}"; do
+    [ -z "${!var:-}" ] && missing_vars+=("$var")
   done
-  (( OSI_USE_ENCRYPTION == 1 && -z "${OSI_ENCRYPTION_PIN:-}" )) && missing+=("OSI_ENCRYPTION_PIN")
-  (( ${#missing[@]} > 0 )) && { log_error "Missing required variables: ${missing[*]}"; exit 1; }
+
+  # Conditionally check OSI_ENCRYPTION_PIN if encryption is enabled
+  if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
+    missing_vars+=("OSI_ENCRYPTION_PIN")
+  fi
+
+  # Print errors and exit if necessary
+  if [ ${#missing_vars[@]} -gt 0 ]; then
+    log_error "Missing required variables: ${missing_vars[*]}"
+    exit 1
+  fi
 }
 check_env
 
