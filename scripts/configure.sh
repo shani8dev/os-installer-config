@@ -211,13 +211,9 @@ set_root_password() {
     fi
 }
 
-enable_systemd_homed_target() {
-    run_in_target "systemctl enable systemd-homed.service"
-}
-
 setup_services_target() {
     log_info "Enabling essential services"
-    local services="NetworkManager systemd-timesyncd ufw plymouth gdm"
+    local services="systemd-homed"
     for service in $services; do
         run_in_target "systemctl enable ${service}"
     done
@@ -353,7 +349,6 @@ main() {
     setup_user_target
     set_root_password
     setup_autologin_target
-    enable_systemd_homed_target
     setup_services_target
     setup_firewall_target
     setup_plymouth_target
