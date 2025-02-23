@@ -1,16 +1,6 @@
 #!/bin/bash
 # configure.sh – Post-installation configuration for Shani OS.
-#
-# This script performs post-install configuration on the active (immutable) root.
-# It mounts the active system subvolume (blue or green) based on the marker stored at
-# /deployment/current-slot (visible in the top‐level Btrfs subvolume), mounts the data subvolume,
-# and proceeds with additional configuration tasks.
-#
-# REQUIRED ENVIRONMENT VARIABLES (in addition to those in install.sh):
-#   OSI_LOCALE, OSI_DEVICE_PATH, OSI_DEVICE_IS_PARTITION, OSI_DEVICE_EFI_PARTITION,
-#   OSI_USE_ENCRYPTION, OSI_ENCRYPTION_PIN, OSI_USER_NAME, OSI_USER_USERNAME,
-#   OSI_USER_AUTOLOGIN, OSI_USER_PASSWORD, OSI_FORMATS, OSI_TIMEZONE, OSI_DESKTOP,
-#   OSI_HOSTNAME, OSI_KEYBOARD_LAYOUT
+# Revised and fixed version.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -39,81 +29,70 @@ CURRENT_SLOT_FILE="${DEPLOYMENT_SUBVOL}/current-slot"
 # Mount point for chrooting into the installed system
 TARGET="/mnt"
 
-# Cleanup: Unmount target and bind mounts on exit.
+# Logging functions
+log_info() { echo "[CONFIG][INFO] $*"; }
+log_error() { echo "[CONFIG][ERROR] $*"; }
+die() { echo "[CONFIG][ERROR] $*" >&2; exit 1; }
+
 cleanup() {
     if mountpoint -q "$TARGET"; then
-        echo "[CONFIG][INFO] Unmounting target and its bind mounts..."
+        log_info "Unmounting target and its bind mounts..."
         for fs in run dev sys proc; do
             if mountpoint -q "$TARGET/$fs"; then
-                sudo umount -R "$TARGET/$fs" || echo "[CONFIG][WARN] Failed to unmount $TARGET/$fs"
+                sudo umount -R "$TARGET/$fs" || log_error "Failed to unmount $TARGET/$fs"
             fi
         done
-        sudo umount -R "$TARGET" || echo "[CONFIG][WARN] Failed to unmount $TARGET"
+        sudo umount -R "$TARGET" || log_error "Failed to unmount $TARGET"
     fi
 }
 
-# Check required commands
 check_prerequisites() {
     local cmds=("arch-chroot" "dracut" "sbsign" "sbverify" "openssl" "blkid" "localectl" "hostnamectl" "mokutil" "mount" "umount" "mkdir")
     for cmd in "${cmds[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
-            echo "[CONFIG][ERROR] Required command '$cmd' not found. Please install it." >&2
-            exit 1
+            die "Required command '$cmd' not found. Please install it."
         fi
     done
 }
 check_prerequisites
 
 check_env() {
-  local missing_vars=()
-  
-  # Full list of required variables
-  local required_vars=(OSI_LOCALE OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION \
-                       OSI_USE_ENCRYPTION OSI_USER_NAME OSI_USER_USERNAME OSI_USER_AUTOLOGIN \
-                       OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE OSI_DESKTOP OSI_HOSTNAME OSI_KEYBOARD_LAYOUT)
-
-  for var in "${required_vars[@]}"; do
-    [ -z "${!var:-}" ] && missing_vars+=("$var")
-  done
-
-  # Conditionally check OSI_ENCRYPTION_PIN if encryption is enabled
-  if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
-    missing_vars+=("OSI_ENCRYPTION_PIN")
-  fi
-
-  # Print errors and exit if necessary
-  if [ ${#missing_vars[@]} -gt 0 ]; then
-    log_error "Missing required environment variables: ${missing_vars[*]}"
-    exit 1
-  fi
+    local missing_vars=()
+    local required_vars=(OSI_LOCALE OSI_KEYBOARD_LAYOUT OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION OSI_USE_ENCRYPTION OSI_USER_NAME OSI_USER_AUTOLOGIN OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE)
+    for var in "${required_vars[@]}"; do
+        [ -z "${!var:-}" ] && missing_vars+=("$var")
+    done
+    if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
+        missing_vars+=("OSI_ENCRYPTION_PIN")
+    fi
+    if [ ${#missing_vars[@]} -gt 0 ]; then
+        log_error "Missing required environment variables: ${missing_vars[*]}"
+        exit 1
+    fi
 }
-
-# Run the checks
 check_env
 
-# Logging functions
-log_info() { echo "[CONFIG][INFO] $*"; }
-die() { echo "[CONFIG][ERROR] $*" >&2; exit 1; }
-
-# get_active_slot: Temporarily mount the Btrfs top‐level (subvolid=5) to read the slot marker.
+# get_active_slot: Mount the top‐level Btrfs subvolume (subvolid=5) to read the active slot marker.
 get_active_slot() {
     local temp_mount="/mnt_top"
+    local active_slot
     sudo mkdir -p "$temp_mount"
     sudo mount -o subvolid=5 "/dev/disk/by-label/${ROOTLABEL}" "$temp_mount" || die "Failed to mount Btrfs top‐level"
     if [[ ! -f "$temp_mount${CURRENT_SLOT_FILE}" ]]; then
         sudo umount "$temp_mount"
         die "Active slot marker not found at ${CURRENT_SLOT_FILE}"
     fi
-    ACTIVE_SLOT=$(cat "$temp_mount${CURRENT_SLOT_FILE}")
+    active_slot=$(cat "$temp_mount${CURRENT_SLOT_FILE}")
     sudo umount "$temp_mount"
-    echo "$ACTIVE_SLOT"
+    echo "$active_slot"
 }
 
 # mount_target: Mount the active system subvolume and bind essential filesystems.
 mount_target() {
-    ACTIVE_SLOT=$(get_active_slot)
-    log_info "Mounting active system slot '${ACTIVE_SLOT}' from ${SYSTEM_SUBVOL}/${ACTIVE_SLOT} to ${TARGET}"
-    sudo mount -o "subvol=${SYSTEM_SUBVOL}/${ACTIVE_SLOT}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET" \
+    local active_slot
+    active_slot=$(get_active_slot)
+    log_info "Mounting active system slot '${active_slot}' from ${SYSTEM_SUBVOL}/${active_slot} to ${TARGET}"
+    sudo mount -o "subvol=${SYSTEM_SUBVOL}/${active_slot}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET" \
       || die "Failed to mount active system"
     for fs in proc sys dev run; do
         sudo mount --rbind "/$fs" "$TARGET/$fs" || die "Failed to bind mount /$fs"
@@ -121,7 +100,7 @@ mount_target() {
     sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" "$TARGET/boot/efi" || die "EFI mount failed"
 }
 
-# mount_data_subvolume: Mount the data subvolume for persistent files.
+# mount_data_subvolume: Mount the persistent data subvolume.
 mount_data_subvolume() {
     log_info "Mounting data subvolume at ${TARGET}${DATA_SUBVOL}"
     sudo mkdir -p "$TARGET${DATA_SUBVOL}"
@@ -131,14 +110,21 @@ mount_data_subvolume() {
 
 # run_in_target: Execute a command inside the chroot environment.
 run_in_target() {
-    sudo arch-chroot "$TARGET" /bin/bash -e -c "$1"
+    local cmd="$1"
+    sudo chroot "$TARGET" /bin/bash -e -c "$cmd"
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        die "Command failed in chroot: $cmd"
+    fi
 }
 
 setup_locale_target() {
     log_info "Setting locale to ${OSI_LOCALE}"
     echo "LANG=${OSI_LOCALE}" | sudo tee "$TARGET/etc/locale.conf" > /dev/null
     run_in_target "localectl set-locale LANG='${OSI_LOCALE}'"
-    [[ -n "${OSI_FORMATS}" ]] && run_in_target "localectl set-locale '${OSI_FORMATS}'"
+    if [[ -n "${OSI_FORMATS}" ]]; then
+        run_in_target "localectl set-locale '${OSI_FORMATS}'"
+    fi
 }
 
 setup_keyboard_target() {
@@ -162,9 +148,9 @@ setup_timezone_target() {
 }
 
 setup_hostname_target() {
-    log_info "Setting hostname to ${OSI_HOSTNAME}"
-    echo "${OSI_HOSTNAME}" | sudo tee "$TARGET/etc/hostname" > /dev/null
-    run_in_target "hostnamectl set-hostname '${OSI_HOSTNAME}'"
+    log_info "Setting hostname to ${OS_NAME}"
+    echo "${OS_NAME}" | sudo tee "$TARGET/etc/hostname" > /dev/null
+    run_in_target "hostnamectl set-hostname '${OS_NAME}'"
 }
 
 setup_machine_id_target() {
@@ -173,26 +159,27 @@ setup_machine_id_target() {
 }
 
 setup_user_target() {
-    log_info "Creating primary user: ${OSI_USER_USERNAME}"
+    log_info "Creating primary user: ${OSI_USER_NAME}"
     local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
-    if run_in_target "id '${OSI_USER_USERNAME}'" &>/dev/null; then
-        log_info "User ${OSI_USER_USERNAME} already exists."
+    if run_in_target "id '${OSI_USER_NAME}'" &>/dev/null; then
+        log_info "User ${OSI_USER_NAME} already exists."
     else
         if run_in_target "command -v homectl &>/dev/null"; then
             log_info "Using homectl to create user"
-            run_in_target "homectl create '${OSI_USER_USERNAME}' --real-name='${OSI_USER_NAME}' \
-              --shell='/bin/bash' --storage=directory --member-of='$(IFS=,; echo "${groups[*]}")'" \
-              || die "Failed to create user ${OSI_USER_USERNAME}"
-            [[ -n "${OSI_USER_PASSWORD}" ]] && \
-              printf "%s\n%s" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | run_in_target "homectl passwd '${OSI_USER_USERNAME}'" \
-              || die "Failed to set password"
+            run_in_target "homectl create '${OSI_USER_NAME}' --real-name='${OSI_USER_NAME}' --shell='/bin/bash' --storage=directory --member-of='$(IFS=,; echo "${groups[*]}")'" \
+              || die "Failed to create user ${OSI_USER_NAME}"
+            if [[ -n "${OSI_USER_PASSWORD}" ]]; then
+                printf "%s\n%s" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | run_in_target "homectl passwd '${OSI_USER_NAME}'" \
+                  || die "Failed to set password"
+            fi
         else
             log_info "Using useradd to create user"
-            run_in_target "useradd -m -s /bin/bash -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_USERNAME}'" \
+            run_in_target "useradd -m -s /bin/bash -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" \
               || die "User creation failed"
-            [[ -n "${OSI_USER_PASSWORD}" ]] && \
-              printf "%s:%s" "$OSI_USER_USERNAME" "$OSI_USER_PASSWORD" | run_in_target "chpasswd" \
-              || die "Failed to set user password"
+            if [[ -n "${OSI_USER_PASSWORD}" ]]; then
+                printf "%s:%s" "$OSI_USER_NAME" "$OSI_USER_PASSWORD" | run_in_target "chpasswd" \
+                  || die "Failed to set user password"
+            fi
         fi
     fi
 }
@@ -200,14 +187,14 @@ setup_user_target() {
 setup_autologin_target() {
     if [[ "${OSI_USER_AUTOLOGIN}" -eq 1 ]]; then
         if run_in_target "command -v homectl &>/dev/null"; then
-            run_in_target "homectl update '${OSI_USER_USERNAME}' --auto-login" || die "Autologin setup failed"
+            run_in_target "homectl update '${OSI_USER_NAME}' --auto-login" || die "Autologin setup failed"
         else
             log_info "Setting up autologin via systemd"
             sudo mkdir -p "$TARGET/etc/systemd/system/getty@tty1.service.d"
-            cat > /tmp/autologin.conf <<EOF
+            sudo tee /tmp/autologin.conf > /dev/null <<EOF
 [Service]
 ExecStart=
-ExecStart=-/usr/bin/agetty --autologin ${OSI_USER_USERNAME} --noclear %I \$TERM
+ExecStart=-/usr/bin/agetty --autologin ${OSI_USER_NAME} --noclear %I \$TERM
 EOF
             sudo mv /tmp/autologin.conf "$TARGET/etc/systemd/system/getty@tty1.service.d/autologin.conf"
         fi
@@ -230,10 +217,9 @@ enable_systemd_homed_target() {
 
 setup_services_target() {
     log_info "Enabling essential services"
-    local services="sshd NetworkManager systemd-timesyncd ufw plymouth"
-    [[ "${OSI_DESKTOP}" == "gnome" ]] && services+=" gdm"
+    local services="NetworkManager systemd-timesyncd ufw plymouth gdm"
     for service in $services; do
-        run_in_target "systemctl enable ${service}" || die "Failed to enable ${service}"
+        run_in_target "systemctl enable ${service}"
     done
 }
 
@@ -248,9 +234,8 @@ setup_plymouth_target() {
 generate_mok_keys_target() {
     run_in_target "mkdir -p /usr/share/secureboot/keys"
     if ! run_in_target "[ -f /usr/share/secureboot/keys/MOK.key ] && [ -f /usr/share/secureboot/keys/MOK.crt ] && [ -f /usr/share/secureboot/keys/MOK.der ]"; then
-        run_in_target "openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key \
-          -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt \
-          -subj '/CN=Shani OS Secure Boot Key/'" || die "Failed to generate MOK keys"
+        run_in_target "openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt -subj '/CN=Shani OS Secure Boot Key/'" \
+          || die "Failed to generate MOK keys"
         run_in_target "openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der" \
           || die "Failed to convert MOK cert"
         run_in_target "chmod 0600 /usr/share/secureboot/keys/MOK.key"
@@ -283,21 +268,21 @@ enroll_mok_key_target() {
 }
 
 create_dracut_config_target() {
-    run_in_target 'cat > /etc/dracut.conf.d/90-shani.conf <<EOF
-compress="zstd"
-add_drivers+=" i915 amdgpu radeon nvidia nvidia_modeset nvidia_uvm nvidia_drm "
-add_dracutmodules+=" btrfs crypt plymouth resume systemd "
-omit_dracutmodules+=" brltty "
+    run_in_target "cat > /etc/dracut.conf.d/90-shani.conf <<'EOF'
+compress=\"zstd\"
+add_drivers+=\" i915 amdgpu radeon nvidia nvidia_modeset nvidia_uvm nvidia_drm \"
+add_dracutmodules+=\" btrfs crypt plymouth resume systemd \"
+omit_dracutmodules+=\" brltty \"
 early_microcode=yes
 use_fstab=yes
 hostonly=yes
 hostonly_cmdline=no
 uefi=yes
-uefi_secureboot_cert="/usr/share/secureboot/keys/MOK.crt"
-uefi_secureboot_key="/usr/share/secureboot/keys/MOK.key"
-uefi_splash_image="/usr/share/systemd/bootctl/splash-arch.bmp"
-uefi_stub="/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
-EOF'
+uefi_secureboot_cert=\"/usr/share/secureboot/keys/MOK.crt\"
+uefi_secureboot_key=\"/usr/share/secureboot/keys/MOK.key\"
+uefi_splash_image=\"/usr/share/systemd/bootctl/splash-arch.bmp\"
+uefi_stub=\"/usr/lib/systemd/boot/efi/linuxx64.efi.stub\"
+EOF"
 }
 
 get_kernel_version() {
@@ -311,7 +296,6 @@ generate_uki_entry() {
     local slot="$1"
     log_info "Generating UKI entry for slot: $slot"
     
-    # Build kernel command-line arguments.
     local cmdline_args=(
         "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
         "quiet"
@@ -322,14 +306,12 @@ generate_uki_entry() {
         "rootflags=subvol=${SYSTEM_SUBVOL}/${slot}"
     )
     
-    # Append LUKS parameters if applicable.
     if run_in_target "[ -e /dev/mapper/${ROOTLABEL} ]"; then
         local luks_uuid
         luks_uuid=$(run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}")
         cmdline_args+=("rd.luks.uuid=${luks_uuid}" "rd.luks.options=${luks_uuid}=tpm2-device=auto")
     fi
     
-    # Append resume parameters if a swap file exists.
     if run_in_target "[ -f ${DATA_SUBVOL}/swap/swapfile ]"; then
         local root_uuid swap_offset
         root_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
@@ -340,7 +322,6 @@ generate_uki_entry() {
     local cmdline
     cmdline=$(IFS=' '; echo "${cmdline_args[*]}")
     
-    # Write kernel command-line file.
     local current_slot_file
     if [[ "$slot" == "$(get_active_slot)" ]]; then
         current_slot_file="$CMDLINE_FILE_CURRENT"
@@ -349,7 +330,6 @@ generate_uki_entry() {
     fi
     echo "$cmdline" | sudo tee "$TARGET/$current_slot_file" > /dev/null
     
-    # Generate the UKI image.
     local kernel_version
     kernel_version=$(get_kernel_version)
     local uki_dir="/boot/efi/EFI/${OS_NAME}"
@@ -358,10 +338,8 @@ generate_uki_entry() {
     run_in_target "dracut --force --uefi --kver '${kernel_version}' --cmdline '${cmdline}' '${uki_path}'"
     sign_efi_binary "$uki_path"
     run_in_target "mkdir -p '${UKI_BOOT_ENTRY}'"
-    run_in_target "cat > '${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf' <<EOF
-title   ${OS_NAME}-${slot}
-efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
-EOF"
+    # Use printf instead of a heredoc for the boot entry configuration.
+    run_in_target "printf 'title   ${OS_NAME}-${slot}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > '${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf'"
 }
 
 main() {
