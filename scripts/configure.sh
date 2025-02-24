@@ -1,295 +1,259 @@
 #!/bin/bash
 # configure.sh – Post-installation configuration for Shani OS.
-# Improved version with enhanced error handling, explicit if/else logic, and added logging.
+# This script configures system settings (locale, keyboard, timezone, hostname,
+# machine-id, user accounts, secure boot, and bootloader entries) in the installed system.
+# It also mounts all required Btrfs subvolumes to establish the full system hierarchy.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
+trap 'echo "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
 
-# Global flag to prevent double cleanup execution.
-CLEANED_UP=0
-
-# Optional: Enable debug mode by uncommenting the following line.
-# [ "${DEBUG:-0}" -eq 1 ] && set -x
-
-########################################
-# Helper Functions
-########################################
-
-# ensure_dir: Create a directory if it doesn't exist.
-ensure_dir() {
-    local dir_path="$1"
-    if [[ ! -d "$dir_path" ]]; then
-        log_info "Creating directory: $dir_path"
-        sudo mkdir -p "$dir_path" || die "Failed to create directory: $dir_path"
-    else
-        log_info "Directory already exists: $dir_path"
-    fi
-}
-
-# Logging functions.
-log_info() { echo "[CONFIG][INFO] $*"; }
-log_error() { echo "[CONFIG][ERROR] $*"; }
-die() { log_error "$*"; exit 1; }
-
-########################################
-# Cleanup and Trap Handlers
-########################################
-
-# cleanup: Unmount target and its bind mounts.
-cleanup() {
-    if [[ $CLEANED_UP -eq 1 ]]; then
-        return
-    fi
-    CLEANED_UP=1
-    if mountpoint -q "$TARGET"; then
-        log_info "Unmounting target and its bind mounts..."
-        for fs in run dev sys proc; do
-            if mountpoint -q "$TARGET/$fs"; then
-                sudo umount -R "$TARGET/$fs" || log_error "Failed to unmount $TARGET/$fs"
-            fi
-        done
-        sudo umount -R "$TARGET" || log_error "Failed to unmount $TARGET"
-    fi
-}
-
-# Trap ERR: Log error details, cleanup, and exit.
-trap 'cleanup; log_error "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
-# Trap EXIT: Always run cleanup.
-trap cleanup EXIT
-
-########################################
-# Global Configuration Variables
-########################################
-
+### Configuration variables
 OS_NAME="shanios"
 OSIDIR="/etc/os-installer"
 ROOTLABEL="shani_root"
 BOOTLABEL="shani_boot"
-
-# Kernel command-line file paths (inside the target system)
 CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_current"
 CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_candidate"
 UKI_BOOT_ENTRY="/boot/efi/loader/entries"
+CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
-# Deployment subvolume paths (must match install.sh)
-DEPLOYMENT_SUBVOL="/deployment"           # Top-level Btrfs subvolume
-SYSTEM_SUBVOL="${DEPLOYMENT_SUBVOL}/system" # Active system (blue/green) subvolumes
-DATA_SUBVOL="${DEPLOYMENT_SUBVOL}/data"     # Persistent data subvolume
+# Required environment variables
+required_vars=(
+  OSI_LOCALE
+  OSI_DEVICE_PATH
+  OSI_DEVICE_IS_PARTITION
+  OSI_DEVICE_EFI_PARTITION
+  OSI_USE_ENCRYPTION
+  OSI_ENCRYPTION_PIN
+  OSI_USER_NAME
+  OSI_USER_AUTOLOGIN
+  OSI_USER_PASSWORD
+  OSI_FORMATS
+  OSI_TIMEZONE
+  OSI_KEYBOARD_LAYOUT
+)
+for var in "${required_vars[@]}"; do
+  if [ -z "${!var:-}" ]; then
+    echo "[CONFIG][ERROR] Environment variable '$var' is not set" >&2
+    exit 1
+  fi
+done
 
-# Active slot marker file (written during install)
-CURRENT_SLOT_FILE="${DEPLOYMENT_SUBVOL}/current-slot"
+# Logging functions (consistent with install.sh)
+log_info() { echo "[CONFIG][INFO] $*"; }
+log_warn() { echo "[CONFIG][WARN] $*" >&2; }
+log_error() { echo "[CONFIG][ERROR] $*" >&2; }
+die() { log_error "$*"; exit 1; }
 
-# Mount point for chrooting into the installed system
 TARGET="/mnt"
 
-########################################
-# Prerequisite and Environment Checks
-########################################
-
-check_prerequisites() {
-    local cmds=("arch-chroot" "dracut" "sbsign" "sbverify" "openssl" "blkid" "localectl" "hostnamectl" "mokutil" "mount" "umount" "mkdir")
-    for cmd in "${cmds[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            die "Required command '$cmd' not found. Please install it."
-        fi
-    done
-    # All prerequisites met:
-    log_info "All prerequisites are installed."
-}
-check_prerequisites
-
-check_env() {
-    local missing_vars=()
-    local required_vars=(OSI_LOCALE OSI_KEYBOARD_LAYOUT OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_DEVICE_EFI_PARTITION OSI_USE_ENCRYPTION OSI_USER_NAME OSI_USER_AUTOLOGIN OSI_USER_PASSWORD OSI_FORMATS OSI_TIMEZONE)
-    for var in "${required_vars[@]}"; do
-        [ -z "${!var:-}" ] && missing_vars+=("$var")
-    done
-    if [[ "${OSI_USE_ENCRYPTION:-0}" -eq 1 && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
-        missing_vars+=("OSI_ENCRYPTION_PIN")
-    fi
-    if [[ ${#missing_vars[@]} -gt 0 ]]; then
-        log_error "Missing required environment variables: ${missing_vars[*]}"
-        exit 1
-    else
-        log_info "All required environment variables are set."
-    fi
-}
-check_env
-
-########################################
-# Main Functional Blocks
-########################################
-
-# get_active_slot: Mount the Btrfs top-level subvolume (subvolid=5) to read the active slot marker.
-get_active_slot() {
-    local temp_mount="/mnt_top"
-    ensure_dir "$temp_mount"
-    sudo mount -o subvolid=5 "/dev/disk/by-label/${ROOTLABEL}" "$temp_mount" || die "Failed to mount Btrfs top-level"
-    if [[ ! -f "$temp_mount${CURRENT_SLOT_FILE}" ]]; then
-        sudo umount "$temp_mount"
-        die "Active slot marker not found at ${CURRENT_SLOT_FILE}"
-    fi
-    local active_slot
-    active_slot=$(cat "$temp_mount${CURRENT_SLOT_FILE}")
-    sudo umount "$temp_mount"
-    echo "$active_slot"
-}
-
-# mount_target: Mount the active system subvolume and bind essential filesystems.
+# Function: mount_target
+# Mount the active system subvolume and necessary pseudo-filesystems.
 mount_target() {
-    local active_slot
-    active_slot=$(get_active_slot)
-    log_info "Mounting active system slot '${active_slot}' from ${SYSTEM_SUBVOL}/${active_slot} to ${TARGET}"
-    ensure_dir "$TARGET"
-    sudo mount -o "subvol=${SYSTEM_SUBVOL}/${active_slot}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET" \
-        || die "Failed to mount active system"
-    for fs in proc sys dev run; do
-        sudo mount --rbind "/$fs" "$TARGET/$fs" || die "Failed to bind mount /$fs"
-    done
-    sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" "$TARGET/boot/efi" || die "EFI mount failed"
+  local temp_root
+  temp_root=$(mktemp -d)
+  log_info "Determining active slot from @data"
+  sudo mount -o subvolid=5 /dev/disk/by-label/"${ROOTLABEL}" "$temp_root" || die "Root mount failed"
+  
+  if [[ -f "$temp_root/@data/current-slot" ]]; then
+    ACTIVE_SLOT=$(< "$temp_root/@data/current-slot")
+  else
+    ACTIVE_SLOT="blue"
+    echo "$ACTIVE_SLOT" | sudo tee "$temp_root/@data/current-slot" >/dev/null
+  fi
+  sudo umount "$temp_root" && rmdir "$temp_root"
+
+  log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
+  sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
+  
+  for fs in proc sys dev run; do
+    sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
+  done
+  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
 }
 
-# mount_data_subvolume: Mount the persistent data subvolume.
-mount_data_subvolume() {
-    log_info "Mounting data subvolume at ${TARGET}${DATA_SUBVOL}"
-    ensure_dir "$TARGET${DATA_SUBVOL}"
-    sudo mount -o "subvol=${DATA_SUBVOL}" "/dev/disk/by-label/${ROOTLABEL}" "$TARGET${DATA_SUBVOL}" \
-        || die "Failed to mount data subvolume"
+# Function: mount_additional_subvols
+# Mount the remaining Btrfs subvolumes to their designated mount points.
+mount_additional_subvols() {
+  local device="/dev/disk/by-label/${ROOTLABEL}"
+  declare -A subvols=(
+    ["@home"]="${TARGET}/home"
+    ["@flatpak"]="${TARGET}/var/lib/flatpak"
+    ["@containers"]="${TARGET}/var/lib/containers"
+    ["@data"]="${TARGET}/data"
+    ["@swap"]="${TARGET}/swap"
+  )
+  for subvol in "${!subvols[@]}"; do
+    local target="${subvols[$subvol]}"
+    log_info "Mounting subvolume ${subvol} to ${target}"
+    sudo mkdir -p "${target}"
+    sudo mount -o "subvol=${subvol},compress=zstd" "${device}" "${target}" \
+      || die "Failed to mount subvolume ${subvol}"
+  done
 }
 
-# run_in_target: Execute a command inside the chroot environment.
+# Function: mount_overlay
+# Configure an overlay mount for /etc.
+mount_overlay() {
+  log_info "Configuring overlay for /etc"
+  sudo mkdir -p "${TARGET}/data/etc/overlay/upper" "${TARGET}/data/etc/overlay/work"
+  sudo mount -t overlay overlay -o \
+    lowerdir="${TARGET}/etc",\
+    upperdir="${TARGET}/data/etc/overlay/upper",\
+    workdir="${TARGET}/data/etc/overlay/work" \
+    "${TARGET}/etc" || die "Overlay mount failed"
+}
+
+# Function: run_in_target
+# Execute a command in the mounted target environment.
 run_in_target() {
-    local cmd="$1"
-    sudo chroot "$TARGET" /bin/bash -e -c "$cmd"
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        die "Command failed in chroot: $cmd"
-    fi
+  sudo chroot "${TARGET}" /bin/bash -c "$1"
 }
 
-# setup_locale_target: Configure system locale inside chroot.
+# Function: generate_fstab
+# Generate /etc/fstab for the installed system.
+generate_fstab() {
+  log_info "Generating /etc/fstab in target system"
+  run_in_target "$(cat <<'EOF'
+cat > /etc/fstab <<FSTAB
+# /etc/fstab: static file system information (label-based)
+#
+# EFI System Partition
+LABEL=shani_boot  /boot/efi   vfat    umask=0077,x-systemd.idle-timeout=1min  0 2
+
+# Btrfs Subvolumes 
+LABEL=shani_root  /home           btrfs   subvol=@home,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
+LABEL=shani_root  /var/lib/flatpak  btrfs  subvol=@flatpak,noatime,compress=zstd,space_cache=v2,autodefrag        0 0
+LABEL=shani_root  /var/lib/containers  btrfs  subvol=@containers,noatime,compress=zstd,space_cache=v2,autodefrag  0 0
+LABEL=shani_root  /data           btrfs   subvol=@data,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
+LABEL=shani_root  /swap           btrfs   subvol=@swap,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
+
+# tmpfs for volatile directories
+tmpfs               /var/log        tmpfs   defaults,noatime                     0 0
+tmpfs               /tmp            tmpfs   defaults,noatime                     0 0
+tmpfs               /run            tmpfs   defaults,noatime                     0 0
+
+# Swapfile (Ensure /swap is mounted first)
+/swap/swapfile  none  swap  defaults  0 0
+
+# OverlayFS (Mounted post-fstab via systemd)
+none            /etc    overlay  lowerdir=/etc,upperdir=/data/etc/overlay/upper,workdir=/data/etc/overlay/work,x-systemd.requires-mounts-for=/data  0 0
+FSTAB
+EOF
+  )"
+}
+
+# Function: setup_locale_target
 setup_locale_target() {
-    log_info "Setting locale to ${OSI_LOCALE}"
-    run_in_target "echo \"LANG=${OSI_LOCALE}\" | tee /etc/locale.conf > /dev/null"
-    run_in_target "localectl set-locale LANG='${OSI_LOCALE}'"
-    if [[ -n "${OSI_FORMATS}" ]]; then
-        run_in_target "localectl set-locale '${OSI_FORMATS}'"
-    fi
+  log_info "Configuring locale to ${OSI_LOCALE}"
+  run_in_target "echo \"LANG=${OSI_LOCALE}\" > /etc/locale.conf && localectl set-locale LANG='${OSI_LOCALE}'"
+  [ -n "${OSI_FORMATS}" ] && run_in_target "localectl set-locale '${OSI_FORMATS}'"
 }
 
-# setup_keyboard_target: Configure keyboard layout inside chroot.
+# Function: setup_keyboard_target
 setup_keyboard_target() {
-    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
-    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" | tee /etc/vconsole.conf > /dev/null"
-    run_in_target "localectl set-keymap '${OSI_KEYBOARD_LAYOUT}'"
-    run_in_target "localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
+  log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
+  run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
 }
 
-# setup_timezone_target: Configure system timezone inside chroot.
+# Function: setup_timezone_target
 setup_timezone_target() {
-    log_info "Setting timezone to ${OSI_TIMEZONE}"
-    run_in_target "test -f /usr/share/zoneinfo/${OSI_TIMEZONE}" || die "Invalid timezone: ${OSI_TIMEZONE}"
-    run_in_target "ln -sf /usr/share/zoneinfo/${OSI_TIMEZONE} /etc/localtime"
-    run_in_target "echo '${OSI_TIMEZONE}' | tee /etc/timezone > /dev/null"
-    run_in_target "timedatectl set-timezone '${OSI_TIMEZONE}'"
+  log_info "Setting timezone to ${OSI_TIMEZONE}"
+  run_in_target "ln -sf \"/usr/share/zoneinfo/${OSI_TIMEZONE}\" /etc/localtime && echo '${OSI_TIMEZONE}' > /etc/timezone && timedatectl set-timezone '${OSI_TIMEZONE}'"
 }
 
-
-# setup_hostname_target: Set the system hostname inside chroot.
+# Function: setup_hostname_target
 setup_hostname_target() {
-    log_info "Setting hostname to ${OS_NAME}"
-    run_in_target "echo \"${OS_NAME}\" | tee /etc/hostname > /dev/null"
-    run_in_target "hostnamectl set-hostname '${OS_NAME}'"
+  log_info "Setting hostname to ${OS_NAME}"
+  run_in_target "echo \"${OS_NAME}\" > /etc/hostname && hostnamectl set-hostname '${OS_NAME}'"
 }
 
-# setup_machine_id_target: Generate a new machine-id inside chroot.
+# Function: setup_machine_id_target
 setup_machine_id_target() {
-    log_info "Generating new machine-id"
-    run_in_target "systemd-machine-id-setup --commit"
+  log_info "Generating new machine-id"
+  run_in_target "systemd-machine-id-setup --commit"
 }
 
-# setup_user_target: Create the primary user inside chroot.
+# Function: setup_user_target
 setup_user_target() {
-    log_info "Creating primary user: ${OSI_USER_NAME}"
-    local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
-    log_info "Using useradd to create user"
-    run_in_target "useradd -m -s /bin/bash -G '$(IFS=,; echo \"${groups[*]}\")' '${OSI_USER_NAME}'" \
-        || die "User creation failed"
-    if [[ -n "${OSI_USER_PASSWORD}" ]]; then
-        printf "%s:%s" "$OSI_USER_NAME" "$OSI_USER_PASSWORD" | run_in_target "chpasswd" \
-            || die "Failed to set user password"
-    fi
+  log_info "Creating primary user: ${OSI_USER_NAME}"
+  local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
+  run_in_target "useradd -m -s /bin/bash -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
+  if [[ -n "${OSI_USER_PASSWORD}" ]]; then
+    printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
+  fi
 }
 
-# setup_autologin_target: Configure autologin based on available display managers.
+# Function: setup_autologin_target
 setup_autologin_target() {
-    if [[ "${OSI_USER_AUTOLOGIN}" -eq 1 ]]; then
-        if run_in_target "command -v gdm >/dev/null 2>&1"; then
-            log_info "GDM detected in chroot. Configuring GDM autologin."
-            run_in_target "mkdir -p /etc/gdm"
-            run_in_target "printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=%s\n' \"${OSI_USER_NAME}\" > /etc/gdm/custom.conf"
-        else
-            log_info "GDM not detected in chroot. Configuring systemd getty autologin for tty1."
-            run_in_target "mkdir -p /etc/systemd/system/getty@tty1.service.d"
-            run_in_target "printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n' \"${OSI_USER_NAME}\" > /etc/systemd/system/getty@tty1.service.d/autologin.conf"
-        fi
+  if [[ "${OSI_USER_AUTOLOGIN}" -eq 1 ]]; then
+    if run_in_target "command -v gdm >/dev/null"; then
+      log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
+      run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
     else
-        log_info "Autologin not enabled."
+      log_info "Configuring getty autologin for ${OSI_USER_NAME}"
+      run_in_target "mkdir -p /etc/systemd/system/getty@tty1.service.d && printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin ${OSI_USER_NAME} --noclear %%I \$TERM\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf"
     fi
+  fi
 }
 
-# set_root_password: Set root password or lock the root account.
+# Function: set_root_password
 set_root_password() {
-    if [[ -n "${OSI_USER_PASSWORD}" ]]; then
-        log_info "Setting root password"
-        printf "root:%s" "$OSI_USER_PASSWORD" | run_in_target "chpasswd"
-    else
-        log_info "Locking root account"
-        run_in_target "passwd --lock root"
-    fi
+  if [[ -n "${OSI_USER_PASSWORD}" ]]; then
+    log_info "Setting root password"
+    printf "root:%s" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd"
+  else
+    log_info "Locking root account"
+    run_in_target "passwd --lock root"
+  fi
 }
 
-# setup_firewall_target: Enable the UFW firewall inside chroot.
-setup_firewall_target() {
-    run_in_target "ufw enable"
+# Create Plymouth configuration to set the theme to shani-bgrt.
+setup_plymouth_theme_target() {
+  log_info "Configuring Plymouth theme to shani-bgrt"
+  run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=shani-bgrt'; } > /etc/plymouth/plymouthd.conf"
 }
 
-# generate_mok_keys_target: Generate and convert Secure Boot MOK keys if not present.
+# Function: generate_mok_keys_target
 generate_mok_keys_target() {
-    run_in_target "mkdir -p /usr/share/secureboot/keys"
-    if ! run_in_target "[ -f /usr/share/secureboot/keys/MOK.key ] && [ -f /usr/share/secureboot/keys/MOK.crt ] && [ -f /usr/share/secureboot/keys/MOK.der ]"; then
-        run_in_target "openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt -subj '/CN=Shani OS Secure Boot Key/'" \
-            || die "Failed to generate MOK keys"
-        run_in_target "openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der" \
-            || die "Failed to convert MOK cert"
-        run_in_target "chmod 0600 /usr/share/secureboot/keys/MOK.key"
-    else
-        log_info "MOK keys already exist."
-    fi
+  log_info "Generating MOK keys for secure boot"
+  run_in_target "mkdir -p /usr/share/secureboot/keys && \
+    if [ ! -f /usr/share/secureboot/keys/MOK.key ]; then
+      openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key \
+        -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt \
+        -subj '/CN=Shani OS Secure Boot Key/' && \
+      openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der && \
+      chmod 0600 /usr/share/secureboot/keys/MOK.key
+    fi"
 }
 
-# sign_efi_binary: Sign and verify an EFI binary.
-sign_efi_binary() {
-    local binary="$1"
-    run_in_target "sbsign --key /usr/share/secureboot/keys/MOK.key --cert /usr/share/secureboot/keys/MOK.crt --output \"$binary\" \"$binary\"" \
-        || die "Failed to sign $binary"
-    run_in_target "sbverify --cert /usr/share/secureboot/keys/MOK.crt \"$binary\"" \
-        || die "Failed to verify $binary"
-}
-
-# install_secureboot_components_target: Install and sign Secure Boot components.
+# Function: install_secureboot_components_target
 install_secureboot_components_target() {
-    run_in_target "mkdir -p /boot/efi/EFI/BOOT"
-    run_in_target "cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI"
-    run_in_target "cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi"
-    run_in_target "cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
-    sign_efi_binary "/boot/efi/EFI/BOOT/grubx64.efi"
+  log_info "Installing secure boot components"
+  run_in_target "mkdir -p /boot/efi/EFI/BOOT && \
+    cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI && \
+    cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi && \
+    cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
 }
 
-# create_dracut_config_target: Create dracut configuration for Shani OS.
+# Function: sign_efi_binary
+sign_efi_binary() {
+  local binary="$1"
+  log_info "Signing EFI binary ${binary}"
+  run_in_target "sbsign --key /usr/share/secureboot/keys/MOK.key --cert /usr/share/secureboot/keys/MOK.crt --output ${binary} ${binary} && sbverify --cert /usr/share/secureboot/keys/MOK.crt ${binary}"
+}
+
+# Function: enroll_mok_key_target
+enroll_mok_key_target() {
+  log_info "Enrolling MOK key for secure boot"
+  run_in_target "printf '%s\n%s\n' '${OSI_ENCRYPTION_PIN}' '${OSI_ENCRYPTION_PIN}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
+}
+
+# Function: create_dracut_config_target
 create_dracut_config_target() {
-    run_in_target "mkdir -p /etc/dracut.conf.d"
-    run_in_target "cat > /etc/dracut.conf.d/90-shani.conf <<'EOF'
+  log_info "Creating dracut configuration"
+  run_in_target "mkdir -p /etc/dracut.conf.d && cat > /etc/dracut.conf.d/90-shani.conf <<'EOF'
 compress=\"zstd\"
 add_drivers+=\" i915 amdgpu radeon nvidia nvidia_modeset nvidia_uvm nvidia_drm \"
 add_dracutmodules+=\" btrfs crypt plymouth resume systemd \"
@@ -306,120 +270,85 @@ uefi_stub=\"/usr/lib/systemd/boot/efi/linuxx64.efi.stub\"
 EOF"
 }
 
-# get_kernel_version: Determine the kernel version inside chroot.
+# Function: get_kernel_version
 get_kernel_version() {
-    local kernel_version
-    kernel_version=$(run_in_target "ls -1 /usr/lib/modules | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1")
-    if [[ -z "$kernel_version" ]]; then
-        die "No kernel version found"
-    else
-        echo "$kernel_version"
-    fi
+  run_in_target "ls -1 /usr/lib/modules | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1"
 }
 
-# generate_uki_entry: Generate a UEFI kernel image (UKI) entry for the given slot.
+# Function: generate_uki_entry
+# Generate a Unified Kernel Image (UKI) and bootloader entry for a given slot.
 generate_uki_entry() {
-    local slot="$1"
-    log_info "Generating UKI entry for slot: $slot"
-    
-    local cmdline_args=(
-        "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
-        "quiet"
-        "splash"
-        "loglevel=3"
-        "systemd.show_status=auto"
-        "rd.udev.log_level=3"
-        "rootflags=subvol=${SYSTEM_SUBVOL}/${slot}"
-    )
-    
-    if run_in_target "[ -e /dev/mapper/${ROOTLABEL} ]"; then
-        local luks_uuid
-        luks_uuid=$(run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}")
-        cmdline_args+=( "rd.luks.uuid=${luks_uuid}" "rd.luks.options=${luks_uuid}=tpm2-device=auto" )
-    fi
-    
-    if run_in_target "[ -f ${DATA_SUBVOL}/swap/swapfile ]"; then
-        local root_uuid swap_offset
-        root_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
-        swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r ${DATA_SUBVOL}/swap/swapfile | awk '{print \$NF}'")
-        cmdline_args+=( "resume=UUID=${root_uuid}" "resume_offset=${swap_offset}" )
-    fi
-    
-    local cmdline
-    cmdline=$(IFS=' '; echo "${cmdline_args[*]}")
-    
-    local current_slot_file
-    if [[ "$slot" == "$(get_active_slot)" ]]; then
-        current_slot_file="$CMDLINE_FILE_CURRENT"
-    else
-        current_slot_file="$CMDLINE_FILE_CANDIDATE"
-    fi
-    echo "$cmdline" | sudo tee "$TARGET/$current_slot_file" > /dev/null
-    
-    local kernel_version
-    kernel_version=$(get_kernel_version)
-    local uki_dir="/boot/efi/EFI/${OS_NAME}"
-    local uki_path="${uki_dir}/${OS_NAME}-${slot}.efi"
-    run_in_target "mkdir -p '${uki_dir}'"
-    run_in_target "dracut --force --uefi --kver '${kernel_version}' --cmdline '${cmdline}' '${uki_path}'"
-    sign_efi_binary "$uki_path"
-    run_in_target "mkdir -p '${UKI_BOOT_ENTRY}'"
-    run_in_target "printf 'title   ${OS_NAME}-${slot}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > '${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf'"
+  local slot="$1"
+  local uuid
+  uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
+  local cmdline="quiet splash root=UUID=${uuid} ro rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag"
+
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    local luks_uuid
+    luks_uuid=$(run_in_target "blkid -s UUID -o value ${OSI_DEVICE_PATH}")
+    cmdline+=" rd.luks.uuid=${luks_uuid} rd.luks.options=${luks_uuid}=tpm2-device=auto"
+  fi
+
+  if run_in_target "[ -f /swap/swapfile ]"; then
+    local swap_offset
+    swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'")
+    cmdline+=" resume=UUID=${uuid} resume_offset=${swap_offset}"
+  fi
+
+  local cmdfile
+  if [ "$slot" == "$(run_in_target "cat ${CURRENT_SLOT_FILE}")" ]; then
+    cmdfile="${CMDLINE_FILE_CURRENT}"
+  else
+    cmdfile="${CMDLINE_FILE_CANDIDATE}"
+  fi
+  run_in_target "echo '${cmdline}' > ${cmdfile}"
+
+  local kernel_version
+  kernel_version=$(get_kernel_version)
+  local uki_path="/boot/efi/EFI/${OS_NAME}/${OS_NAME}-${slot}.efi"
+  run_in_target "mkdir -p /boot/efi/EFI/${OS_NAME}/"
+  run_in_target "dracut --force --uefi --kver ${kernel_version} --cmdline \"${cmdline}\" ${uki_path}"
+  sign_efi_binary "${uki_path}"
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/shanios-${slot}.conf <<EOF
+title   shanios-${slot}
+efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
+options \$kernel_cmdline
+EOF"
 }
 
-# setup_plymouth_target: Set the default Plymouth theme.
-setup_plymouth_target() {
-    run_in_target "plymouth-set-default-theme bgrt-shani"
-}
-
-# enroll_mok_key_target: Enroll the MOK key (if OSI_USER_PASSWORD is set).
-enroll_mok_key_target() {
-    if [[ -z "${OSI_USER_PASSWORD:-}" ]]; then
-        log_info "Skipping MOK key enrollment because OSI_USER_PASSWORD is not set."
-        return
-    else
-        printf "%s\n%s" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | \
-            run_in_target "mokutil --import /usr/share/secureboot/keys/MOK.der" \
-            || die "Failed to enroll MOK key"
-    fi
-}
-
-########################################
-# Main Execution Flow
-########################################
-
+# Main configuration function
 main() {
-    mount_target
-    mount_data_subvolume
-    setup_locale_target
-    setup_keyboard_target
-    setup_timezone_target
-    setup_hostname_target
-    setup_machine_id_target
-    setup_user_target
-    set_root_password
-    setup_autologin_target
-    setup_firewall_target
-    generate_mok_keys_target
-    install_secureboot_components_target
-    create_dracut_config_target
+  mount_target
+  mount_additional_subvols
+  mount_overlay
+  generate_fstab
 
-    local current_slot candidate_slot
-    current_slot=$(get_active_slot)
-    # Expect only "blue" or "green"; otherwise, error out.
-    if [[ "$current_slot" == "blue" ]]; then
-        candidate_slot="green"
-    elif [[ "$current_slot" == "green" ]]; then
-        candidate_slot="blue"
-    else
-        die "Unexpected active slot value: $current_slot"
-    fi
+  setup_locale_target
+  setup_keyboard_target
+  setup_timezone_target
+  setup_hostname_target
+  setup_machine_id_target
+  setup_user_target
+  set_root_password
+  setup_autologin_target
+  setup_plymouth_theme_target
+  generate_mok_keys_target
+  install_secureboot_components_target
+  create_dracut_config_target
 
-    generate_uki_entry "$current_slot"
-    generate_uki_entry "$candidate_slot"
-    setup_plymouth_target
-    enroll_mok_key_target
-    log_info "Configuration completed successfully!"
+  local current_slot
+  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
+  local candidate_slot
+  if [ "${current_slot}" == "blue" ]; then
+    candidate_slot="green"
+  else
+    candidate_slot="blue"
+  fi
+
+  generate_uki_entry "${current_slot}"
+  generate_uki_entry "${candidate_slot}"
+  enroll_mok_key_target
+  log_info "Configuration completed successfully!"
 }
 
 main
