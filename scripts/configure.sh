@@ -98,11 +98,7 @@ mount_additional_subvols() {
 mount_overlay() {
   log_info "Configuring overlay for /etc"
   sudo mkdir -p "${TARGET}/data/etc/overlay/upper" "${TARGET}/data/etc/overlay/work"
-  sudo mount -t overlay overlay -o \
-    lowerdir="${TARGET}/etc",\
-    upperdir="${TARGET}/data/etc/overlay/upper",\
-    workdir="${TARGET}/data/etc/overlay/work" \
-    "${TARGET}/etc" || die "Overlay mount failed"
+  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/etc/overlay/upper,workdir=${TARGET}/data/etc/overlay/work" "${TARGET}/etc" || die "Overlay mount failed"
 }
 
 # Function: run_in_target
@@ -212,7 +208,7 @@ set_root_password() {
 # Create Plymouth configuration to set the theme to shani-bgrt.
 setup_plymouth_theme_target() {
   log_info "Configuring Plymouth theme to shani-bgrt"
-  run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=shani-bgrt'; } > /etc/plymouth/plymouthd.conf"
+  run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt-shani'; } > /etc/plymouth/plymouthd.conf"
 }
 
 # Function: generate_mok_keys_target
@@ -285,7 +281,7 @@ generate_uki_entry() {
 
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     local luks_uuid
-    luks_uuid=$(run_in_target "blkid -s UUID -o value ${OSI_DEVICE_PATH}")
+    luks_uuid=$(run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}")
     cmdline+=" rd.luks.uuid=${luks_uuid} rd.luks.options=${luks_uuid}=tpm2-device=auto"
   fi
 
@@ -307,12 +303,11 @@ generate_uki_entry() {
   kernel_version=$(get_kernel_version)
   local uki_path="/boot/efi/EFI/${OS_NAME}/${OS_NAME}-${slot}.efi"
   run_in_target "mkdir -p /boot/efi/EFI/${OS_NAME}/"
-  run_in_target "dracut --force --uefi --kver ${kernel_version} --cmdline \"${cmdline}\" ${uki_path}"
+  run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
   run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/shanios-${slot}.conf <<EOF
 title   shanios-${slot}
 efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
-options \$kernel_cmdline
 EOF"
 }
 

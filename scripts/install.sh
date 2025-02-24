@@ -110,10 +110,10 @@ mount_top_level() {
   sudo mount -o "${BTRFS_TOP_OPTS}" "${BTRFS_TARGET}" /mnt || { log_error "Mounting top-level filesystem failed"; exit 1; }
 }
 
-# Function: create_subvolumes
+# Function: create_subvolumes do not create subvol for @blue @green @flatpak since we snapshot the base subvols
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@blue" "@green" "@home" "@flatpak" "@containers" "@data" "@swap" )
+  local subvolumes=( "@home" "@containers" "@data" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -123,7 +123,7 @@ create_subvolumes() {
     fi
   done
 
-  local data_dirs=( "current-slot" "previous-slot" "etc/overlay/upper" "etc/overlay/work" "downloads" )
+  local data_dirs=( "etc/overlay/upper" "etc/overlay/work" "downloads" )
   for dir in "${data_dirs[@]}"; do
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then
