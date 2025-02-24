@@ -13,8 +13,8 @@ OS_NAME="shanios"
 OSIDIR="/etc/os-installer"
 ROOTLABEL="shani_root"
 BOOTLABEL="shani_boot"
-CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_current"
-CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_candidate"
+CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_blue"
+CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_green"
 UKI_BOOT_ENTRY="/boot/efi/loader/entries"
 CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
