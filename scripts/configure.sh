@@ -246,6 +246,19 @@ enroll_mok_key_target() {
   run_in_target "printf '%s\n%s\n' '${OSI_ENCRYPTION_PIN}' '${OSI_ENCRYPTION_PIN}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
 }
 
+bypass_mok_prompt_target() {
+  log "Attempting to bypass MOK prompt"
+  run_in_target "mkdir -p /sys/firmware/efi/efivars"
+  run_in_target "mount --bind /sys/firmware/efi/efivars /sys/firmware/efi/efivars"
+  run_in_target 'bash -c "
+    if [[ -f /usr/share/secureboot/keys/MOK.der ]]; then
+      efivar -n MOKList -w -d /usr/share/secureboot/keys/MOK.der  || true;
+    fi
+  "'
+  run_in_target "mokutil --disable-validation"
+  run_in_target "umount /sys/firmware/efi/efivars"
+}
+
 # Function: create_dracut_config_target
 create_dracut_config_target() {
   log_info "Creating dracut configuration"
@@ -343,6 +356,7 @@ main() {
   generate_uki_entry "${current_slot}"
   generate_uki_entry "${candidate_slot}"
   enroll_mok_key_target
+  bypass_mok_prompt_target
   log_info "Configuration completed successfully!"
 }
 
