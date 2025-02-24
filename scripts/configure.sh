@@ -110,39 +110,6 @@ run_in_target() {
   sudo chroot "${TARGET}" /bin/bash -c "$1"
 }
 
-# Function: generate_fstab
-# Generate /etc/fstab for the installed system.
-generate_fstab() {
-  log_info "Generating /etc/fstab in target system"
-  run_in_target "$(cat <<'EOF'
-cat > /etc/fstab <<FSTAB
-# /etc/fstab: static file system information (label-based)
-#
-# EFI System Partition
-LABEL=shani_boot  /boot/efi   vfat    umask=0077  0 2
-
-# Btrfs Subvolumes 
-LABEL=shani_root  /home           btrfs   rw,subvol=@home,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
-LABEL=shani_root  /var/lib/flatpak  btrfs  rw,subvol=@flatpak,noatime,compress=zstd,space_cache=v2,autodefrag        0 0
-LABEL=shani_root  /var/lib/containers  btrfs  rw,subvol=@containers,noatime,compress=zstd,space_cache=v2,autodefrag  0 0
-LABEL=shani_root  /data           btrfs   rw,subvol=@data,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
-LABEL=shani_root  /swap           btrfs   rw,subvol=@swap,noatime,compress=zstd,space_cache=v2,autodefrag            0 0
-
-# tmpfs for volatile directories
-tmpfs               /var/log        tmpfs   defaults,noatime                     0 0
-tmpfs               /tmp            tmpfs   defaults,noatime                     0 0
-tmpfs               /run            tmpfs   defaults,noatime                     0 0
-
-# Swapfile (Ensure /swap is mounted first)
-/swap/swapfile  none  swap  defaults  0 0
-
-# OverlayFS (Mounted post-fstab via systemd)
-none            /etc    overlay  rw,lowerdir=/etc,upperdir=/data/etc/overlay/upper,workdir=/data/etc/overlay/work,x-systemd.requires-mounts-for=/data  0 0
-FSTAB
-EOF
-  )"
-}
-
 # Function: setup_locale_target
 setup_locale_target() {
   log_info "Configuring locale to ${OSI_LOCALE}"
@@ -250,8 +217,6 @@ enroll_mok_key_target() {
   if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
     log_info "Enrolling MOK key for secure boot"
     run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
-    # Pipe the password (twice, as required) into mokutil --disable-validation.
-    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --disable-validation"
   else
     log_warn "Skipping MOK key enrollment because OSI_USER_PASSWORD is not provided"
   fi
@@ -266,26 +231,9 @@ bypass_mok_prompt_target() {
       efivar -n MOKList -w -d /usr/share/secureboot/keys/MOK.der  || true;
     fi
   "'
+  # Pipe the password (twice, as required) into mokutil --disable-validation.
+  run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --disable-validation"
   run_in_target "umount /sys/firmware/efi/efivars"
-}
-
-# Function: create_dracut_config_target
-create_dracut_config_target() {
-  log_info "Creating dracut configuration"
-  run_in_target "mkdir -p /etc/dracut.conf.d && cat > /etc/dracut.conf.d/90-shani.conf <<'EOF'
-compress=\"zstd\"
-add_dracutmodules+=\" btrfs crypt plymouth resume \"
-omit_dracutmodules+=\" brltty \"
-early_microcode=yes
-use_fstab=yes
-hostonly=yes
-hostonly_cmdline=no
-uefi=yes
-uefi_secureboot_cert=\"/usr/share/secureboot/keys/MOK.crt\"
-uefi_secureboot_key=\"/usr/share/secureboot/keys/MOK.key\"
-uefi_splash_image=\"/usr/share/systemd/bootctl/splash-arch.bmp\"
-uefi_stub=\"/usr/lib/systemd/boot/efi/linuxx64.efi.stub\"
-EOF"
 }
 
 # Function: get_kernel_version
@@ -296,46 +244,67 @@ get_kernel_version() {
 # Function: generate_uki_entry
 # Generate a Unified Kernel Image (UKI) and bootloader entry for a given slot.
 generate_uki_entry() {
-local slot="$1"
-local uuid luks_uuid
-uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
-luks_uuid=$(run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}")
+  local slot="$1"
 
-local cmdline="quiet splash rw rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag"
+  # Retrieve the filesystem UUID from the partition labeled with ROOTLABEL.
+  local fs_uuid
+  fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
 
-if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-    cmdline+=" root=UUID=${luks_uuid} rd.luks.uuid=${luks_uuid} rd.luks.options=${luks_uuid}=tpm2-device=auto"
-else
-    cmdline+=" root=UUID=${uuid}"
-fi
+  # Retrieve the LUKS UUID only if encryption is enabled.
+  local luks_uuid
+  luks_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && run_in_target "cryptsetup luksUUID /dev/disk/by-label/${ROOTLABEL}" || echo "" )
 
-if run_in_target "[ -f /swap/swapfile ]"; then
-    local swap_offset
-    swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'")
-    if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-        cmdline+=" resume=UUID=${luks_uuid} resume_offset=${swap_offset}"
-    else
-        cmdline+=" resume=UUID=${uuid} resume_offset=${swap_offset}"
-    fi
-fi
+  # Determine the root device and additional encryption parameters.
+  local rootdev
+  rootdev=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "/dev/mapper/${ROOTLABEL}" || echo "UUID=${fs_uuid}" )
+  local encryption_params
+  encryption_params=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo " rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto" || echo "" )
 
-  local cmdfile
-  if [ "$slot" == "$(run_in_target "cat ${CURRENT_SLOT_FILE}")" ]; then
-    cmdfile="${CMDLINE_FILE_CURRENT}"
-  else
-    cmdfile="${CMDLINE_FILE_CANDIDATE}"
+  # Build the kernel command line.
+  local cmdline="quiet splash rw rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+
+  # Set the resume UUID (LUKS UUID if encrypted, otherwise filesystem UUID).
+  local resume_uuid
+  resume_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "${luks_uuid}" || echo "${fs_uuid}" )
+
+  # Append swap parameters if a swap file exists.
+  if run_in_target "[ -f /swap/swapfile ]"; then
+      local swap_offset
+      swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'")
+      cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
   fi
+
+  # Determine the appropriate command line file based on the current slot.
+  local current_slot
+  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
+  local cmdfile
+  cmdfile=$( [[ "$slot" == "$current_slot" ]] && echo "${CMDLINE_FILE_CURRENT}" || echo "${CMDLINE_FILE_CANDIDATE}" )
   run_in_target "echo '${cmdline}' > ${cmdfile}"
 
+  # Build the EFI binary using dracut.
   local kernel_version
   kernel_version=$(get_kernel_version)
   local uki_path="/boot/efi/EFI/${OS_NAME}/${OS_NAME}-${slot}.efi"
   run_in_target "mkdir -p /boot/efi/EFI/${OS_NAME}/"
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/shanios-${slot}.conf <<EOF
-title   shanios-${slot}
+
+  # Create the boot entry file for the loader.
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf <<EOF
+title   ${OS_NAME}-${slot}
 efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
+EOF"
+
+}
+
+generate_loader_conf() {
+  local slot="$1"
+  # Update the loader configuration.
+  run_in_target "mkdir -p /boot/efi/loader && cat > /boot/efi/loader/loader.conf <<EOF
+default ${OS_NAME}-${slot}.conf
+timeout 5
+console-mode max
+editor 0
 EOF"
 }
 
@@ -344,7 +313,6 @@ main() {
   mount_target
   mount_additional_subvols
   mount_overlay
-  generate_fstab
 
   setup_locale_target
   setup_keyboard_target
@@ -357,7 +325,6 @@ main() {
   setup_plymouth_theme_target
   generate_mok_keys_target
   install_secureboot_components_target
-  create_dracut_config_target
 
   local current_slot
   current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
@@ -370,8 +337,8 @@ main() {
 
   generate_uki_entry "${current_slot}"
   generate_uki_entry "${candidate_slot}"
+  generate_loader_conf "${current_slot}"
   enroll_mok_key_target
-  bypass_mok_prompt_target
   log_info "Configuration completed successfully!"
 }
 
