@@ -180,7 +180,7 @@ set_root_password() {
 # Create Plymouth configuration to set the theme to shani-bgrt.
 setup_plymouth_theme_target() {
   log_info "Configuring Plymouth theme to shani-bgrt"
-  run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt-shani'; } > /etc/plymouth/plymouthd.conf"
+  run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt'; } > /etc/plymouth/plymouthd.conf"
 }
 
 # Function: generate_mok_keys_target
@@ -252,7 +252,7 @@ generate_uki_entry() {
 
   # Retrieve the LUKS UUID only if encryption is enabled.
   local luks_uuid
-  luks_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && run_in_target "cryptsetup luksUUID /dev/disk/by-label/${ROOTLABEL}" || echo "" )
+  luks_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}" || echo "" )
 
   # Determine the root device and additional encryption parameters.
   local rootdev
