@@ -145,7 +145,7 @@ setup_machine_id_target() {
 setup_user_target() {
   log_info "Creating primary user: ${OSI_USER_NAME}"
   local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
-  run_in_target "useradd -m -s /bin/bash -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
+  run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
   if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
     printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
   else
