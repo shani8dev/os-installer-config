@@ -261,7 +261,7 @@ generate_uki_entry() {
   encryption_params=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo " rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto" || echo "" )
 
   # Build the kernel command line.
-  local cmdline="quiet splash rw rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+  local cmdline="quiet splash ro rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # Set the resume UUID (LUKS UUID if encrypted, otherwise filesystem UUID).
   local resume_uuid
