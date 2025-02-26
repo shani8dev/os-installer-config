@@ -80,19 +80,25 @@ mount_target() {
 # Mount the remaining Btrfs subvolumes to their designated mount points.
 mount_additional_subvols() {
   local device="/dev/disk/by-label/${ROOTLABEL}"
+  
+  # Define the subvolumes with target paths and additional mount options.
   declare -A subvols=(
-    ["@home"]="${TARGET}/home"
-    ["@flatpak"]="${TARGET}/var/lib/flatpak"
-    ["@containers"]="${TARGET}/var/lib/containers"
-    ["@data"]="${TARGET}/data"
-    ["@swap"]="${TARGET}/swap"
+    ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@var"]="/var|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
   )
+
+  # Loop through each subvolume in the associative array.
   for subvol in "${!subvols[@]}"; do
-    local target="${subvols[$subvol]}"
-    log_info "Mounting subvolume ${subvol} to ${target}"
-    sudo mkdir -p "${target}"
-    sudo mount -o "subvol=${subvol},compress=zstd" "${device}" "${target}" \
-      || die "Failed to mount subvolume ${subvol}"
+    # Split the array value into target path and mount options using the '|' delimiter.
+    IFS='|' read -r target options <<< "${subvols[$subvol]}"
+    log_info "Mounting subvolume ${subvol} to ${TARGET}${target} with options: ${options}"
+    sudo mkdir -p "${TARGET}${target}"
+    sudo mount -t btrfs -o "subvol=${subvol},${options}" "$device" "${TARGET}${target}" \
+      || die "Failed to mount subvolume ${subvol} to ${TARGET}${target}"
   done
 }
 
@@ -151,6 +157,9 @@ setup_user_target() {
   else
     log_warn "No user password provided, user account created without a password."
   fi
+  # Create a sudoers drop-in file for the wheel group granting full sudo privileges.
+  run_in_target "echo -e '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/99_wheel && chmod 0440 /etc/sudoers.d/99_wheel" \
+    || die "Failed to configure sudoers for wheel group"
 }
 
 # Function: setup_autologin_target
