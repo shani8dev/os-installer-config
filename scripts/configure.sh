@@ -103,15 +103,6 @@ mount_additional_subvols() {
   done
 }
 
-# Mount tmpfs for /run, /var/log, and /var/tmp to ensure they are memory-backed.
-mount_tmpfs() {
-  log_info "Mounting tmpfs for /run, /var/log, and /var/tmp"
-  for dir in tmp run; do
-    sudo mkdir -p "${TARGET}/$dir"
-    sudo mount -t tmpfs -o mode=0755 tmpfs "${TARGET}/$dir" || die "Failed to mount tmpfs on ${TARGET}/$dir"
-  done
-}
-
 # Function: mount_overlay
 # Configure an overlay mount for /etc.
 mount_overlay() {
@@ -343,7 +334,6 @@ EOF"
 main() {
   mount_target
   mount_additional_subvols
-  mount_tmpfs
   mount_overlay
 
   setup_locale_target
