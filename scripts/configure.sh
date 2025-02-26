@@ -86,7 +86,6 @@ mount_additional_subvols() {
     ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
-    ["@tmp"]="/var/tmp|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
