@@ -113,7 +113,7 @@ mount_top_level() {
 # Function: create_subvolumes do not create subvol for @blue @green @flatpak since we snapshot the base subvols
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@var" "@containers" "@swap" )
+  local subvolumes=( "@home" "@data" "@log" "@tmp" "@containers" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -123,7 +123,7 @@ create_subvolumes() {
     fi
   done
 
-  local data_dirs=( "etc/overlay/upper" "etc/overlay/work" "downloads" )
+  local data_dirs=( "overlay/etc/lower" "overlay/etc/upper" "overlay/etc/work" "downloads" )
   for dir in "${data_dirs[@]}"; do
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then

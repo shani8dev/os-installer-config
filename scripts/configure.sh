@@ -85,7 +85,8 @@ mount_additional_subvols() {
   declare -A subvols=(
     ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
-    ["@var"]="/var|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@tmp"]="/var/tmp|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
@@ -102,12 +103,33 @@ mount_additional_subvols() {
   done
 }
 
+# Mount tmpfs for /run, /var/log, and /var/tmp to ensure they are memory-backed.
+mount_tmpfs() {
+  log_info "Mounting tmpfs for /run, /var/log, and /var/tmp"
+  for dir in tmp run; do
+    sudo mkdir -p "${TARGET}/$dir"
+    sudo mount -t tmpfs -o mode=0755 tmpfs "${TARGET}/$dir" || die "Failed to mount tmpfs on ${TARGET}/$dir"
+  done
+}
+
 # Function: mount_overlay
 # Configure an overlay mount for /etc.
 mount_overlay() {
   log_info "Configuring overlay for /etc"
-  sudo mkdir -p "${TARGET}/data/etc/overlay/upper" "${TARGET}/data/etc/overlay/work"
-  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/etc/overlay/upper,workdir=${TARGET}/data/etc/overlay/work" "${TARGET}/etc" || die "Overlay mount failed"
+
+  # Create necessary overlay directories in the data subvolume (matching fstab paths)
+  sudo mkdir -p "${TARGET}/data/overlay/etc/lower" \
+               "${TARGET}/data/overlay/etc/upper" \
+               "${TARGET}/data/overlay/etc/work"
+
+  # Bind mount the original /etc to the overlay lower directory
+  log_info "Bind mounting original /etc to ${TARGET}/data/overlay/etc/lower"
+  sudo mount --bind "${TARGET}/etc" "${TARGET}/data/overlay/etc/lower" || die "Bind mount of /etc failed"
+  sudo mount -o remount,ro,bind "${TARGET}/data/overlay/etc/lower" || die "Remounting lower overlay directory as read-only failed"
+
+  # Mount the overlay using the correct lower, upper, and work directories
+  log_info "Mounting overlay on /etc"
+  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/data/overlay/etc/lower,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
 }
 
 # Function: run_in_target
@@ -270,7 +292,7 @@ generate_uki_entry() {
   encryption_params=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo " rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto" || echo "" )
 
   # Build the kernel command line.
-  local cmdline="quiet splash ro rootfstype=btrfs rootflags=subvol=@${slot},compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+  local cmdline="quiet splash rootfstype=btrfs rootflags=subvol=@${slot},ro,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # Set the resume UUID (LUKS UUID if encrypted, otherwise filesystem UUID).
   local resume_uuid
@@ -321,6 +343,7 @@ EOF"
 main() {
   mount_target
   mount_additional_subvols
+  mount_tmpfs
   mount_overlay
 
   setup_locale_target
