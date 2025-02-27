@@ -112,14 +112,13 @@ mount_overlay() {
                "${TARGET}/data/overlay/etc/upper" \
                "${TARGET}/data/overlay/etc/work"
 
-  # Bind mount the original /etc to the overlay lower directory
-  log_info "Bind mounting original /etc to ${TARGET}/data/overlay/etc/lower"
-  sudo mount --bind "${TARGET}/etc" "${TARGET}/data/overlay/etc/lower" || die "Bind mount of /etc failed"
-  sudo mount -o remount,ro,bind "${TARGET}/data/overlay/etc/lower" || die "Remounting lower overlay directory as read-only failed"
+  sudo chmod 0755 "${TARGET}/data/overlay/etc/lower" \
+              "${TARGET}/data/overlay/etc/upper" \
+              "${TARGET}/data/overlay/etc/work"
 
   # Mount the overlay using the correct lower, upper, and work directories
   log_info "Mounting overlay on /etc"
-  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/data/overlay/etc/lower,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
+  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
 }
 
 # Function: run_in_target
