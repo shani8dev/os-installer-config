@@ -162,6 +162,11 @@ setup_machine_id_target() {
 setup_user_target() {
   log_info "Creating primary user: ${OSI_USER_NAME}"
   local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
+    for group in "${groups[@]}"; do
+    		if ! run_in_target "getent group ${group}" >/dev/null; then
+      		run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
+    		fi
+  	done
   run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
   if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
     printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
@@ -208,7 +213,7 @@ generate_mok_keys_target() {
   log_info "Generating MOK keys for secure boot"
   run_in_target "mkdir -p /usr/share/secureboot/keys && \
     if [ ! -f /usr/share/secureboot/keys/MOK.key ]; then
-      openssl req -newkey rsa:4096 -nodes -keyout /usr/share/secureboot/keys/MOK.key \
+      openssl req -newkey rsa:2048 -nodes -keyout /usr/share/secureboot/keys/MOK.key \
         -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt \
         -subj '/CN=Shani OS Secure Boot Key/' && \
       openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der && \
@@ -232,28 +237,119 @@ sign_efi_binary() {
   run_in_target "sbsign --key /usr/share/secureboot/keys/MOK.key --cert /usr/share/secureboot/keys/MOK.crt --output ${binary} ${binary} && sbverify --cert /usr/share/secureboot/keys/MOK.crt ${binary}"
 }
 
-# Function: enroll_mok_key_target
-enroll_mok_key_target() {
-  if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
-    log_info "Enrolling MOK key for secure boot"
-    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
+move_keyfile_to_systemd() {
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  	log_info "Relocating keyfile to systemd directory"
+  	local src_keyfile="/boot/efi/crypto_keyfile.bin"
+  	local dest_dir="/etc/cryptsetup-keys.d"
+  
+	  if run_in_target "[ -f ${src_keyfile} ]"; then
+		# Move keyfile to systemd's cryptsetup directory
+		run_in_target "mkdir -p ${dest_dir} && \
+		  mv ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
+		  chmod 0400 ${dest_dir}/${ROOTLABEL}.bin"
+	  else
+		log_warn "No keyfile found in EFI partition; assuming manual unlock"
+	  fi
   else
-    log_warn "Skipping MOK key enrollment because OSI_USER_PASSWORD is not provided"
+    log_info "Encryption not enabled; skipping the cryptfile relocation"
   fi
 }
 
-bypass_mok_prompt_target() {
-  log_info "Attempting to bypass MOK prompt"
-  run_in_target "mkdir -p /sys/firmware/efi/efivars"
-  run_in_target "mount --bind /sys/firmware/efi/efivars /sys/firmware/efi/efivars"
-  run_in_target 'bash -c "
-    if [[ -f /usr/share/secureboot/keys/MOK.der ]]; then
-      efivar -n MOKList -w -d /usr/share/secureboot/keys/MOK.der  || true;
+# Function: generate_crypttab_target
+# Updated to dynamically derive the LUKS UUID from the underlying block device.
+generate_crypttab_target() {
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    log_info "Generating /etc/crypttab in the target system"
+    local parent
+    parent=$(run_in_target "lsblk -no PKNAME /dev/mapper/${ROOTLABEL} | head -n1" | tr -d '\n')
+    [[ -z "$parent" ]] && die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
+    local underlying="/dev/${parent}"
+    local luks_uuid
+    luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
+    [[ -z "$luks_uuid" ]] && die "Failed to retrieve LUKS UUID from ${underlying}"
+    
+    local keyfile_path="/etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
+    local keyfile_option=""
+    if run_in_target "[ -f '${keyfile_path}' ]"; then
+      keyfile_option="${keyfile_path}"
     fi
-  "'
-  # Pipe the password (twice, as required) into mokutil --disable-validation.
-  run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --disable-validation"
-  run_in_target "umount /sys/firmware/efi/efivars"
+
+    local entry="luks-${luks_uuid} UUID=${luks_uuid} ${keyfile_option} luks,discard"
+    run_in_target "echo '${entry}' > /etc/crypttab"
+    log_info "/etc/crypttab generated with entry: ${entry}"
+  else
+    log_info "Encryption not enabled; skipping /etc/crypttab generation"
+  fi
+}
+
+# Function: crypt_dracut_conf function:
+crypt_dracut_conf() {
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  log_info "Configuring dracut for encryption"
+  local install_items="/etc/crypttab"
+  	if run_in_target "[ -f /etc/cryptsetup-keys.d/${ROOTLABEL}.bin ]"; then
+    		install_items+=" /etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
+  	fi
+  	run_in_target "echo 'install_items+=\" ${install_items} \"' > /etc/dracut.conf.d/99-crypt-key.conf"
+  else
+    log_info "Encryption not enabled; skipping dracut for encryption config generation"
+  fi
+}
+
+setup_dracut_conf_target() {
+  log_info "Configuring dracut for system"
+  local dracut_conf="/etc/dracut.conf.d/99-shani-os.conf"
+  run_in_target "cat > ${dracut_conf} <<'EOF'
+compress=\"zstd\"
+add_dracutmodules+=\" crypt btrfs plymouth resume overlayfs \"
+omit_dracutmodules+=\" brltty \"
+early_microcode=yes
+use_fstab=yes
+hostonly=yes
+hostonly_cmdline=no
+uefi=yes
+uefi_secureboot_cert=\"/usr/share/secureboot/keys/MOK.crt\"
+uefi_secureboot_key=\"/usr/share/secureboot/keys/MOK.key\"
+uefi_splash_image=\"/usr/share/systemd/bootctl/splash-shani.bmp\"
+uefi_stub=\"/usr/lib/systemd/boot/efi/linuxx64.efi.stub\"
+EOF"
+}
+
+generate_fstab_target() {
+  log_info "Generating /etc/fstab"
+  run_in_target "cat > /etc/fstab <<EOF
+# ============================================================================
+# /etc/fstab - Full Improved Configuration with Additional Volatile Directories
+# ----------------------------------------------------------------------------
+# Btrfs Subvolumes (LABEL=${ROOTLABEL}) and tmpfs mounts for volatile data.
+
+#############################
+# EFI System Partition      #
+#############################
+LABEL=${BOOTLABEL}   /boot/efi   vfat    defaults  0 2
+
+#############################
+# Btrfs Subvolumes (RW)     #
+#############################
+LABEL=${ROOTLABEL}   /home   btrfs   defaults,noatime,subvol=@home,rw,compress=zstd,space_cache=v2,autodefrag  0 0
+LABEL=${ROOTLABEL}   /data   btrfs   defaults,noatime,subvol=@data,rw,compress=zstd,space_cache=v2,autodefrag  0 0
+LABEL=${ROOTLABEL}   /var/log    btrfs   defaults,noatime,subvol=@log,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
+LABEL=${ROOTLABEL}   /var/lib/flatpak   btrfs   defaults,noatime,subvol=@flatpak,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
+LABEL=${ROOTLABEL}   /var/lib/containers   btrfs   defaults,noatime,subvol=@containers,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
+LABEL=${ROOTLABEL}   /swap   btrfs   noatime,subvol=@swap,rw,nodatacow,nospace_cache  0 0
+
+######################################
+# tmpfs for Volatile Directories     #
+######################################
+tmpfs   /tmp      tmpfs   defaults,noatime   0 0
+tmpfs   /run      tmpfs   defaults,noatime   0 0
+
+##############################
+# Overlay for /etc           #
+##############################
+overlay /etc overlay  rw,lowerdir=/etc,upperdir=/data/overlay/etc/upper,workdir=/data/overlay/etc/work,index=off,metacopy=off,x-systemd.requires-mounts-for=/data  0 0
+EOF"
 }
 
 # Function: get_kernel_version
@@ -263,45 +359,54 @@ get_kernel_version() {
 
 # Function: generate_uki_entry
 # Generate a Unified Kernel Image (UKI) and bootloader entry for a given slot.
+# Updated to derive the LUKS UUID from the underlying block device.
 generate_uki_entry() {
   local slot="$1"
 
   # Retrieve the filesystem UUID from the partition labeled with ROOTLABEL.
   local fs_uuid
   fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
+  
+  local luks_uuid=""
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    # Get the parent device for the decrypted mapping.
+    local parent
+    parent=$(run_in_target "lsblk -no PKNAME /dev/mapper/${ROOTLABEL} | head -n1" | tr -d '\n')
+    if [[ -z "$parent" ]]; then
+      die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
+    fi
+    local underlying="/dev/${parent}"
+    # Retrieve the LUKS header UUID from the underlying device.
+    luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
+    if [[ -z "$luks_uuid" ]]; then
+      die "Failed to retrieve LUKS UUID from ${underlying}"
+    fi
+  fi
 
-  # Retrieve the LUKS UUID only if encryption is enabled.
-  local luks_uuid
-  luks_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && run_in_target "blkid -s UUID -o value /dev/mapper/${ROOTLABEL}" || echo "" )
-
-  # Determine the root device and additional encryption parameters.
+  # Determine the root device: if encryption is enabled, use the decrypted mapping;
+  # otherwise, use the filesystem UUID.
   local rootdev
   rootdev=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "/dev/mapper/${ROOTLABEL}" || echo "UUID=${fs_uuid}" )
   local encryption_params
   encryption_params=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo " rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto" || echo "" )
 
-  # Build the kernel command line.
   local cmdline="quiet splash systemd.volatile=state rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
-  # Set the resume UUID (LUKS UUID if encrypted, otherwise filesystem UUID).
   local resume_uuid
   resume_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "${luks_uuid}" || echo "${fs_uuid}" )
 
-  # Append swap parameters if a swap file exists.
   if run_in_target "[ -f /swap/swapfile ]"; then
       local swap_offset
       swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'")
       cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
   fi
 
-  # Determine the appropriate command line file based on the current slot.
   local current_slot
   current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
   local cmdfile
   cmdfile=$( [[ "$slot" == "$current_slot" ]] && echo "${CMDLINE_FILE_CURRENT}" || echo "${CMDLINE_FILE_CANDIDATE}" )
   run_in_target "echo '${cmdline}' > ${cmdfile}"
 
-  # Build the EFI binary using dracut.
   local kernel_version
   kernel_version=$(get_kernel_version)
   local uki_path="/boot/efi/EFI/${OS_NAME}/${OS_NAME}-${slot}.efi"
@@ -309,12 +414,10 @@ generate_uki_entry() {
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
 
-  # Create the boot entry file for the loader.
   run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf <<EOF
 title   ${OS_NAME}-${slot}
 efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
 EOF"
-
 }
 
 generate_loader_conf() {
@@ -326,6 +429,69 @@ timeout 5
 console-mode max
 editor 0
 EOF"
+}
+
+# Function: enroll_mok_key_target
+enroll_mok_key_target() {
+  if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
+    log_info "Enrolling MOK key for secure boot"
+    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
+  else
+    log_warn "Skipping MOK key enrollment because OSI_USER_PASSWORD is not provided"
+  fi
+}
+
+bypass_mok_prompt_target() {
+  local efivars="/sys/firmware/efi/efivars"
+  local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
+  local umount_needed=false
+
+  # Exit if system is not UEFI
+  if ! run_in_target "[ -d /sys/firmware/efi ]"; then
+    log_warn "Skipping MOK bypass: Non-UEFI system"
+    return 0
+  fi
+
+  log_info "Configuring Secure Boot validation bypass"
+
+  # Mount efivarfs if not already mounted
+  if ! run_in_target "grep -q ' ${efivars} ' /proc/mounts"; then
+    run_in_target "mount -t efivarfs efivarfs '${efivars}'" || {
+      log_warn "Failed to mount efivarfs"
+      return 1
+    }
+    umount_needed=true
+  fi
+
+  # Write EFI variable with correct attributes (NV+BS+RT)
+  local success=false
+  if run_in_target "command -v efivar >/dev/null"; then
+    if run_in_target "printf '\x01' | efivar -n '${mok_var}' -w -t 7 -f - >/dev/null 2>&1"; then
+      success=true
+    else
+      log_warn "Failed to set MokSBStateRT variable"
+    fi
+  else
+    log_warn "efivar tool not found in target system"
+  fi
+
+  # Verify the variable's data (skip 4-byte attributes)
+  if [[ "$success" == true ]]; then
+    if run_in_target "[ -f '${efivars}/${mok_var}' ] && \
+       [ \"\$(od -An -t u1 -j4 -N1 '${efivars}/${mok_var}' | tr -d ' \n')\" = '1' ]"; then
+      log_info "Secure Boot bypass confirmed"
+    else
+      log_warn "Bypass verification failed"
+      success=false
+    fi
+  fi
+
+  # Unmount efivarfs if mounted by this function
+  if [[ "$umount_needed" == true ]]; then
+    run_in_target "umount '${efivars}'" || log_warn "Failed to unmount efivarfs"
+  fi
+
+  [[ "$success" == true ]] || return 1
 }
 
 # Main configuration function
@@ -345,6 +511,11 @@ main() {
   setup_plymouth_theme_target
   generate_mok_keys_target
   install_secureboot_components_target
+  move_keyfile_to_systemd
+  generate_crypttab_target        
+  crypt_dracut_conf             
+  setup_dracut_conf_target
+  generate_fstab_target  
 
   local current_slot
   current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
@@ -359,6 +530,7 @@ main() {
   generate_uki_entry "${candidate_slot}"
   generate_loader_conf "${current_slot}"
   enroll_mok_key_target
+  bypass_mok_prompt_target
   log_info "Configuration completed successfully!"
 }
 

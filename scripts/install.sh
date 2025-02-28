@@ -29,7 +29,8 @@ check_env() {
     [ -z "${!var:-}" ] && missing_vars+=("$var")
   done
   if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
-    missing_vars+=("OSI_ENCRYPTION_PIN")
+    log_info "No OSI_ENCRYPTION_PIN provided; will use keyfile-based unlocking."
+    # We intentionally do not add OSI_ENCRYPTION_PIN to missing_vars here.
   fi
   if [ ${#missing_vars[@]} -gt 0 ]; then
     log_error "Missing required environment variables: ${missing_vars[*]}"
@@ -75,8 +76,8 @@ do_partitioning() {
   log_info "Partitioning disk at ${OSI_DEVICE_PATH}"
   local partition_prefix=""
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
-    if [[ "${OSI_DEVICE_PATH}" =~ nvme[0-9]+n[0-9]+$ ]]; then
-      partition_prefix="${OSI_DEVICE_PATH}p"
+	if [[ "${OSI_DEVICE_PATH}" =~ ^/dev/nvme[0-9]+n[0-9]+$ ]]; then
+	  partition_prefix="${OSI_DEVICE_PATH}p"
     else
       partition_prefix="${OSI_DEVICE_PATH}"
     fi
@@ -92,10 +93,20 @@ do_partitioning() {
 create_filesystems() {
   log_info "Formatting EFI partition (${OSI_DEVICE_EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
   sudo mkfs.fat -F32 "${OSI_DEVICE_EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
+  mount_boot_partition
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-    log_info "Setting up LUKS encryption on ${ROOT_PARTITION}"
-    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
-    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
+    if [ -n "${OSI_ENCRYPTION_PIN:-}" ]; then
+      log_info "Setting up LUKS encryption on ${ROOT_PARTITION} using provided encryption PIN"
+      echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
+      echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
+	else
+	  log_info "No encryption PIN provided; generating keyfile in EFI partition"
+	  sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
+	  sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
+	  sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+	  sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+	  export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"  # Target-relative path
+	fi
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
     BTRFS_TARGET="${ROOT_PARTITION}"
@@ -103,6 +114,7 @@ create_filesystems() {
   log_info "Creating Btrfs filesystem on ${BTRFS_TARGET} with label ${ROOTLABEL}"
   sudo mkfs.btrfs -f -L "${ROOTLABEL}" "${BTRFS_TARGET}" || { log_error "Btrfs filesystem creation failed"; exit 1; }
 }
+
 
 # Function: mount_top_level
 mount_top_level() {
@@ -192,7 +204,6 @@ do_setup() {
   create_subvolumes
   extract_system_image
   extract_flatpak_image
-  mount_boot_partition
   create_swapfile
 
   log_info "Syncing data to disk..."
