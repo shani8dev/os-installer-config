@@ -473,7 +473,6 @@ main() {
   generate_uki_entry "${candidate_slot}"
   generate_loader_conf "${current_slot}"
   enroll_mok_key_target
-  bypass_mok_prompt_target
   log_info "Configuration completed successfully!"
 }
 
