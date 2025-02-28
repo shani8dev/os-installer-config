@@ -285,7 +285,7 @@ generate_crypttab_target() {
       keyfile_option="none"
     fi
 
-    local entry="luks-${luks_uuid} UUID=${luks_uuid} ${keyfile_option} luks,discard"
+    local entry="${ROOTLABEL} UUID=${luks_uuid} ${keyfile_option} luks,discard"
     run_in_target "echo '${entry}' > /etc/crypttab"
     log_info "/etc/crypttab generated with entry: ${entry}"
   else
@@ -353,7 +353,7 @@ generate_uki_entry() {
     encryption_params=" rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto"
   fi
 
-  local cmdline="quiet splash systemd.volatile=state rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+  local cmdline="quiet splash systemd.volatile=state ro rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # For resume settings, choose the appropriate UUID.
   local resume_uuid
