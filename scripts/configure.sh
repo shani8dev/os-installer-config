@@ -162,11 +162,11 @@ setup_machine_id_target() {
 setup_user_target() {
   log_info "Creating primary user: ${OSI_USER_NAME}"
   local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
-    for group in "${groups[@]}"; do
-    		if ! run_in_target "getent group ${group}" >/dev/null; then
-      		run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
-    		fi
-  	done
+  for group in "${groups[@]}"; do
+    if ! run_in_target "getent group ${group}" >/dev/null; then
+      run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
+    fi
+  done
   run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
   if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
     printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
@@ -239,18 +239,18 @@ sign_efi_binary() {
 
 move_keyfile_to_systemd() {
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-  	log_info "Relocating keyfile to systemd directory"
-  	local src_keyfile="/boot/efi/crypto_keyfile.bin"
-  	local dest_dir="/etc/cryptsetup-keys.d"
+    log_info "Relocating keyfile to systemd directory"
+    local src_keyfile="/boot/efi/crypto_keyfile.bin"
+    local dest_dir="/etc/cryptsetup-keys.d"
   
-	  if run_in_target "[ -f ${src_keyfile} ]"; then
-		# Move keyfile to systemd's cryptsetup directory
-		run_in_target "mkdir -p ${dest_dir} && \
-		  mv ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
-		  chmod 0400 ${dest_dir}/${ROOTLABEL}.bin"
-	  else
-		log_warn "No keyfile found in EFI partition; assuming manual unlock"
-	  fi
+    if run_in_target "[ -f ${src_keyfile} ]"; then
+      # Move keyfile to systemd's cryptsetup directory
+      run_in_target "mkdir -p ${dest_dir} && \
+        mv ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
+        chmod 0400 ${dest_dir}/${ROOTLABEL}.bin"
+    else
+      log_warn "No keyfile found in EFI partition; assuming manual unlock"
+    fi
   else
     log_info "Encryption not enabled; skipping the cryptfile relocation"
   fi
@@ -261,18 +261,28 @@ move_keyfile_to_systemd() {
 generate_crypttab_target() {
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     log_info "Generating /etc/crypttab in the target system"
-    local parent
-    parent=$(run_in_target "lsblk -no PKNAME /dev/mapper/${ROOTLABEL} | head -n1" | tr -d '\n')
-    [[ -z "$parent" ]] && die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
-    local underlying="/dev/${parent}"
+    
+    # Determine the underlying block device from the LUKS mapping.
+    local underlying
+    underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
+    if [[ -z "$underlying" ]]; then
+      die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
+    fi
+
+    # Retrieve the LUKS header UUID from the underlying physical device.
     local luks_uuid
     luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
-    [[ -z "$luks_uuid" ]] && die "Failed to retrieve LUKS UUID from ${underlying}"
-    
+    if [[ -z "$luks_uuid" ]]; then
+      die "Failed to retrieve LUKS UUID from ${underlying}"
+    fi
+
+    # Set keyfile option: use keyfile if it exists, otherwise "none".
     local keyfile_path="/etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
-    local keyfile_option=""
+    local keyfile_option
     if run_in_target "[ -f '${keyfile_path}' ]"; then
       keyfile_option="${keyfile_path}"
+    else
+      keyfile_option="none"
     fi
 
     local entry="luks-${luks_uuid} UUID=${luks_uuid} ${keyfile_option} luks,discard"
@@ -283,15 +293,15 @@ generate_crypttab_target() {
   fi
 }
 
-# Function: crypt_dracut_conf function:
+# Function: crypt_dracut_conf
 crypt_dracut_conf() {
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-  log_info "Configuring dracut for encryption"
-  local install_items="/etc/crypttab"
-  	if run_in_target "[ -f /etc/cryptsetup-keys.d/${ROOTLABEL}.bin ]"; then
-    		install_items+=" /etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
-  	fi
-  	run_in_target "echo 'install_items+=\" ${install_items} \"' > /etc/dracut.conf.d/99-crypt-key.conf"
+    log_info "Configuring dracut for encryption"
+    local install_items="/etc/crypttab"
+    if run_in_target "[ -f /etc/cryptsetup-keys.d/${ROOTLABEL}.bin ]"; then
+      install_items+=" /etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
+    fi
+    run_in_target "echo 'install_items+=\" ${install_items} \"' > /etc/dracut.conf.d/99-crypt-key.conf"
   else
     log_info "Encryption not enabled; skipping dracut for encryption config generation"
   fi
@@ -310,18 +320,18 @@ generate_uki_entry() {
 
   # Retrieve the filesystem UUID from the partition labeled with ROOTLABEL.
   local fs_uuid
-  fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}")
+  fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}" | tr -d '\n')
   
   local luks_uuid=""
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-    # Get the parent device for the decrypted mapping.
-    local parent
-    parent=$(run_in_target "lsblk -no PKNAME /dev/mapper/${ROOTLABEL} | head -n1" | tr -d '\n')
-    if [[ -z "$parent" ]]; then
+    # Determine the underlying block device from the LUKS mapping using cryptsetup status.
+    local underlying
+    underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
+    if [[ -z "$underlying" ]]; then
       die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
     fi
-    local underlying="/dev/${parent}"
-    # Retrieve the LUKS header UUID from the underlying device.
+
+    # Retrieve the LUKS header UUID from the underlying physical device.
     luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
     if [[ -z "$luks_uuid" ]]; then
       die "Failed to retrieve LUKS UUID from ${underlying}"
@@ -331,27 +341,48 @@ generate_uki_entry() {
   # Determine the root device: if encryption is enabled, use the decrypted mapping;
   # otherwise, use the filesystem UUID.
   local rootdev
-  rootdev=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "/dev/mapper/${ROOTLABEL}" || echo "UUID=${fs_uuid}" )
-  local encryption_params
-  encryption_params=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo " rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto" || echo "" )
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    rootdev="/dev/mapper/${ROOTLABEL}"
+  else
+    rootdev="UUID=${fs_uuid}"
+  fi
+
+  # Build encryption parameters if needed.
+  local encryption_params=""
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    encryption_params=" rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto"
+  fi
 
   local cmdline="quiet splash systemd.volatile=state rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
+  # For resume settings, choose the appropriate UUID.
   local resume_uuid
-  resume_uuid=$( [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]] && echo "${luks_uuid}" || echo "${fs_uuid}" )
-
-  if run_in_target "[ -f /swap/swapfile ]"; then
-      local swap_offset
-      swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'")
-      cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    resume_uuid="${luks_uuid}"
+  else
+    resume_uuid="${fs_uuid}"
   fi
 
+  # If a swapfile exists, determine its offset and append resume parameters.
+  if run_in_target "[ -f /swap/swapfile ]"; then
+    local swap_offset
+    swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'" | tr -d '\n')
+    cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
+  fi
+
+  # Determine which cmdline file to update.
   local current_slot
-  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
+  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
   local cmdfile
-  cmdfile=$( [[ "$slot" == "$current_slot" ]] && echo "${CMDLINE_FILE_CURRENT}" || echo "${CMDLINE_FILE_CANDIDATE}" )
+  if [[ "$slot" == "$current_slot" ]]; then
+    cmdfile="${CMDLINE_FILE_CURRENT}"
+  else
+    cmdfile="${CMDLINE_FILE_CANDIDATE}"
+  fi
+
   run_in_target "echo '${cmdline}' > ${cmdfile}"
 
+  # Generate the bootable EFI image.
   local kernel_version
   kernel_version=$(get_kernel_version)
   local uki_path="/boot/efi/EFI/${OS_NAME}/${OS_NAME}-${slot}.efi"
@@ -359,21 +390,15 @@ generate_uki_entry() {
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
 
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && cat > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf <<EOF
-title   ${OS_NAME}-${slot}
-efi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi
-EOF"
+  # Create the UEFI boot entry configuration using printf instead of a heredoc.
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf"
 }
 
+# Function: generate_loader_conf
 generate_loader_conf() {
   local slot="$1"
-  # Update the loader configuration.
-  run_in_target "mkdir -p /boot/efi/loader && cat > /boot/efi/loader/loader.conf <<EOF
-default ${OS_NAME}-${slot}.conf
-timeout 5
-console-mode max
-editor 0
-EOF"
+  # Update the loader configuration using printf instead of a heredoc.
+  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\n' > /boot/efi/loader/loader.conf"
 }
 
 # Function: enroll_mok_key_target
