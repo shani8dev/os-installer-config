@@ -297,61 +297,6 @@ crypt_dracut_conf() {
   fi
 }
 
-setup_dracut_conf_target() {
-  log_info "Configuring dracut for system"
-  local dracut_conf="/etc/dracut.conf.d/99-shani-os.conf"
-  run_in_target "cat > ${dracut_conf} <<'EOF'
-compress=\"zstd\"
-add_dracutmodules+=\" crypt btrfs plymouth resume overlayfs \"
-omit_dracutmodules+=\" brltty \"
-early_microcode=yes
-use_fstab=yes
-hostonly=yes
-hostonly_cmdline=no
-uefi=yes
-uefi_secureboot_cert=\"/usr/share/secureboot/keys/MOK.crt\"
-uefi_secureboot_key=\"/usr/share/secureboot/keys/MOK.key\"
-uefi_splash_image=\"/usr/share/systemd/bootctl/splash-shani.bmp\"
-uefi_stub=\"/usr/lib/systemd/boot/efi/linuxx64.efi.stub\"
-EOF"
-}
-
-generate_fstab_target() {
-  log_info "Generating /etc/fstab"
-  run_in_target "cat > /etc/fstab <<EOF
-# ============================================================================
-# /etc/fstab - Full Improved Configuration with Additional Volatile Directories
-# ----------------------------------------------------------------------------
-# Btrfs Subvolumes (LABEL=${ROOTLABEL}) and tmpfs mounts for volatile data.
-
-#############################
-# EFI System Partition      #
-#############################
-LABEL=${BOOTLABEL}   /boot/efi   vfat    defaults  0 2
-
-#############################
-# Btrfs Subvolumes (RW)     #
-#############################
-LABEL=${ROOTLABEL}   /home   btrfs   defaults,noatime,subvol=@home,rw,compress=zstd,space_cache=v2,autodefrag  0 0
-LABEL=${ROOTLABEL}   /data   btrfs   defaults,noatime,subvol=@data,rw,compress=zstd,space_cache=v2,autodefrag  0 0
-LABEL=${ROOTLABEL}   /var/log    btrfs   defaults,noatime,subvol=@log,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
-LABEL=${ROOTLABEL}   /var/lib/flatpak   btrfs   defaults,noatime,subvol=@flatpak,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
-LABEL=${ROOTLABEL}   /var/lib/containers   btrfs   defaults,noatime,subvol=@containers,rw,compress=zstd,space_cache=v2,autodefrag,x-systemd.after=var.mount,x-systemd.requires=var.mount  0 0
-LABEL=${ROOTLABEL}   /swap   btrfs   noatime,subvol=@swap,rw,nodatacow,nospace_cache  0 0
-
-######################################
-# tmpfs for Volatile Directories     #
-######################################
-tmpfs   /tmp      tmpfs   defaults,noatime   0 0
-tmpfs   /run      tmpfs   defaults,noatime   0 0
-
-##############################
-# Overlay for /etc           #
-##############################
-overlay /etc overlay  rw,lowerdir=/etc,upperdir=/data/overlay/etc/upper,workdir=/data/overlay/etc/work,index=off,metacopy=off,x-systemd.requires-mounts-for=/data  0 0
-EOF"
-}
-
 # Function: get_kernel_version
 get_kernel_version() {
   run_in_target "ls -1 /usr/lib/modules | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -n1"
