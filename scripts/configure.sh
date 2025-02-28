@@ -459,8 +459,6 @@ main() {
   move_keyfile_to_systemd
   generate_crypttab_target        
   crypt_dracut_conf             
-  setup_dracut_conf_target
-  generate_fstab_target  
 
   local current_slot
   current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
