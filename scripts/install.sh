@@ -158,9 +158,9 @@ extract_system_image() {
     exit 1
   fi
   log_info "Creating snapshot @blue from shanios_base"
-  sudo btrfs subvolume snapshot -r "/mnt/shanios_base" "/mnt/@blue" || { log_error "Snapshot creation for @blue failed"; exit 1; }
+  sudo btrfs subvolume snapshot "/mnt/shanios_base" "/mnt/@blue" || { log_error "Snapshot creation for @blue failed"; exit 1; }
   log_info "Creating snapshot @green from @blue"
-  sudo btrfs subvolume snapshot -r "/mnt/@blue" "/mnt/@green" || { log_error "Snapshot creation for @green failed"; exit 1; }
+  sudo btrfs subvolume snapshot "/mnt/@blue" "/mnt/@green" || { log_error "Snapshot creation for @green failed"; exit 1; }
   log_info "Deleting original subvolume shanios_base"
   sudo btrfs subvolume delete "/mnt/shanios_base" || log_warn "Could not delete shanios_base; please remove manually later"
   log_info "Setting active slot marker to 'blue'"
