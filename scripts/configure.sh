@@ -18,7 +18,7 @@ CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_green"
 UKI_BOOT_ENTRY="/boot/efi/loader/entries"
 CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
-# Required environment variables
+# Environment variables (allowed to be not set)
 required_vars=(
   OSI_LOCALE
   OSI_DEVICE_PATH
@@ -33,13 +33,12 @@ required_vars=(
 )
 for var in "${required_vars[@]}"; do
   if [ -z "${!var:-}" ]; then
-    echo "[CONFIG][ERROR] Environment variable '$var' is not set" >&2
-    exit 1
+    echo "[CONFIG][WARN] Environment variable '$var' is not set" >&2
   fi
 done
 
 # Warn if encryption is enabled but no encryption PIN is provided.
-if [[ "${OSI_USE_ENCRYPTION}" -eq 1 && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
+if [[ "${OSI_USE_ENCRYPTION:-0}" -eq 1 && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
   echo "[CONFIG][WARN] OSI_USE_ENCRYPTION is enabled, but OSI_ENCRYPTION_PIN is not provided. Proceeding without it." >&2
 fi
 
@@ -48,6 +47,7 @@ log_info() { echo "[CONFIG][INFO] $*"; }
 log_warn() { echo "[CONFIG][WARN] $*" >&2; }
 log_error() { echo "[CONFIG][ERROR] $*" >&2; }
 die() { log_error "$*"; exit 1; }
+
 
 TARGET="/mnt"
 
@@ -127,60 +127,88 @@ run_in_target() {
   sudo chroot "${TARGET}" /bin/bash -c "$1"
 }
 
-# Function: setup_locale_target
-setup_locale_target() {
-  log_info "Configuring locale to ${OSI_LOCALE}"
-  run_in_target "echo \"LANG=${OSI_LOCALE}\" > /etc/locale.conf && localectl set-locale LANG='${OSI_LOCALE}'"
-  [ -n "${OSI_FORMATS}" ] && run_in_target "localectl set-locale '${OSI_FORMATS}'"
-}
-
-# Function: setup_keyboard_target
-setup_keyboard_target() {
-  log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
-  run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
-}
-
-# Function: setup_timezone_target
-setup_timezone_target() {
-  log_info "Setting timezone to ${OSI_TIMEZONE}"
-  run_in_target "ln -sf \"/usr/share/zoneinfo/${OSI_TIMEZONE}\" /etc/localtime && echo '${OSI_TIMEZONE}' > /etc/timezone && timedatectl set-timezone '${OSI_TIMEZONE}'"
-}
-
-# Function: setup_hostname_target
-setup_hostname_target() {
-  log_info "Setting hostname to ${OS_NAME}"
-  run_in_target "echo \"${OS_NAME}\" > /etc/hostname && hostnamectl set-hostname '${OS_NAME}'"
-}
-
 # Function: setup_machine_id_target
 setup_machine_id_target() {
+  # No variable is required for machine-id setup; always execute.
   log_info "Generating new machine-id"
   run_in_target "systemd-machine-id-setup --commit"
 }
 
+# Function: setup_hostname_target
+setup_hostname_target() {
+  if [ -n "${OS_NAME:-}" ]; then
+    log_info "Setting hostname to ${OS_NAME}"
+    run_in_target "echo \"${OS_NAME}\" > /etc/hostname && hostnamectl set-hostname '${OS_NAME}'"
+  else
+    log_info "Hostname variable not provided, skipping hostname configuration."
+  fi
+}
+
+# Function: setup_locale_target
+setup_locale_target() {
+  if [ -n "${OSI_LOCALE:-}" ]; then
+    log_info "Configuring locale to ${OSI_LOCALE}"
+    run_in_target "echo \"LANG=${OSI_LOCALE}\" > /etc/locale.conf && localectl set-locale LANG='${OSI_LOCALE}'"
+  else
+    log_info "Locale variable not provided, skipping locale configuration."
+  fi
+}
+
+# Function: setup_formats_target
+setup_formats_target() {
+  if [ -n "${OSI_FORMATS:-}" ]; then
+    log_info "Configuring formats: ${OSI_FORMATS}"
+    # OSI_FORMATS should contain one or more key=value pairs separated by spaces.
+    run_in_target "localectl set-locale ${OSI_FORMATS}"
+  else
+    log_info "Formats variable not provided, skipping formats configuration."
+  fi
+}
+
+# Function: setup_keyboard_target
+setup_keyboard_target() {
+  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ]; then
+    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
+    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
+  else
+    log_info "Keyboard layout variable not provided, skipping keyboard configuration."
+  fi
+}
+
+# Function: setup_timezone_target
+setup_timezone_target() {
+  if [ -n "${OSI_TIMEZONE:-}" ]; then
+    log_info "Setting timezone to ${OSI_TIMEZONE}"
+    run_in_target "ln -sf \"/usr/share/zoneinfo/${OSI_TIMEZONE}\" /etc/localtime && echo '${OSI_TIMEZONE}' > /etc/timezone && timedatectl set-timezone '${OSI_TIMEZONE}'"
+  else
+    log_info "Timezone variable not provided, skipping timezone configuration."
+  fi
+}
+
 # Function: setup_user_target
 setup_user_target() {
-  log_info "Creating primary user: ${OSI_USER_NAME}"
-  local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
-  for group in "${groups[@]}"; do
-    if ! run_in_target "getent group ${group}" >/dev/null; then
-      run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
+  if [ -n "${OSI_USER_NAME:-}" ]; then
+    log_info "Creating primary user: ${OSI_USER_NAME}"
+    local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
+    for group in "${groups[@]}"; do
+      if ! run_in_target "getent group ${group}" >/dev/null; then
+        run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
+      fi
+    done
+    run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
+    if [ -n "${OSI_USER_PASSWORD:-}" ]; then
+      printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
+    else
+      log_warn "No user password provided, user account created without a password."
     fi
-  done
-  run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
-  if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
-    printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
   else
-    log_warn "No user password provided, user account created without a password."
+    log_info "User name variable not provided, skipping user configuration."
   fi
-  # Create a sudoers drop-in file for the wheel group granting full sudo privileges.
-  run_in_target "echo -e '%wheel ALL=(ALL:ALL) ALL' > /etc/sudoers.d/99_wheel && chmod 0440 /etc/sudoers.d/99_wheel" \
-    || die "Failed to configure sudoers for wheel group"
 }
 
 # Function: setup_autologin_target
 setup_autologin_target() {
-  if [[ "${OSI_USER_AUTOLOGIN}" -eq 1 ]]; then
+  if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_NAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" -eq 1 ]; then
     if run_in_target "command -v gdm >/dev/null"; then
       log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
       run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
@@ -188,23 +216,26 @@ setup_autologin_target() {
       log_info "Configuring getty autologin for ${OSI_USER_NAME}"
       run_in_target "mkdir -p /etc/systemd/system/getty@tty1.service.d && printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin ${OSI_USER_NAME} --noclear %%I \$TERM\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf"
     fi
+  else
+    log_info "Autologin not enabled or required variables not provided, skipping autologin configuration."
   fi
 }
 
 # Function: set_root_password
 set_root_password() {
-  if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
+  if [ -n "${OSI_USER_PASSWORD:-}" ]; then
     log_info "Setting root password"
     printf "root:%s" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd"
   else
-    log_info "No root password provided; locking root account"
-    run_in_target "passwd --lock root"
+    log_info "No root password provided, skipping root password configuration."
+    # Alternatively, you might choose to lock the root account if that is preferred:
+    # run_in_target "passwd --lock root"
   fi
 }
 
 # Create Plymouth configuration to set the theme to shani-bgrt.
 setup_plymouth_theme_target() {
-  log_info "Configuring Plymouth theme to shani-bgrt"
+  log_info "Configuring Plymouth theme to bgrt"
   run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt'; } > /etc/plymouth/plymouthd.conf"
 }
 
