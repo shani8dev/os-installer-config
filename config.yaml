@@ -7,21 +7,22 @@ internet_connection_required: no
 
 internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
 
-fixed_language: en
+fixed_language: no
 
 suggested_languages:
     - 'en'
 
 welcome_page:
-    logo    : '/usr/share/pixmaps/shanios-logo.png'
-    text    : '# Welcome to Shani OS!
+    logo: '/usr/share/pixmaps/shanios-logo.png'
+    text: |
+      # Welcome to Shani OS!
 
       **An Immutable OS for Ultimate Reliability**
 
       This installer will guide you through a quick and secure setup.
 
-      Let's begin!'
-    usage   : yes
+      Let's begin!
+    usage: yes
 
 minimum_disk_size: 64
 
@@ -38,5 +39,5 @@ skip_locale: yes
 failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
 
 browser_cmd: 'firefox'
-disks_cmd  : 'gnome-disks'
-wifi_cmd   : 'gnome-control-center wifi'
+disks_cmd: 'gnome-disks'
+wifi_cmd: 'gnome-control-center wifi'

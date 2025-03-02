@@ -18,6 +18,28 @@ CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_green"
 UKI_BOOT_ENTRY="/boot/efi/loader/entries"
 CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
+# Read installer configuration for skip flags
+CONFIG_FILE="/etc/os-installer/config.yml"
+if [[ -f "${CONFIG_FILE}" ]]; then
+  # Assumes a simple YAML with lines like "skip_user: yes"
+  SKIP_USER=$(grep -E '^skip_user:' "${CONFIG_FILE}" | awk '{print $2}')
+  SKIP_LOCALE=$(grep -E '^skip_locale:' "${CONFIG_FILE}" | awk '{print $2}')
+
+  if [[ "${SKIP_USER}" == "yes" ]]; then
+    export OSI_USER_NAME=""
+    export OSI_USER_PASSWORD=""
+    export OSI_USER_AUTOLOGIN=""
+    log_info "skip_user enabled; user configuration variables have been cleared."
+  fi
+
+  if [[ "${SKIP_LOCALE}" == "yes" ]]; then
+    export OSI_FORMATS=""
+    export OSI_TIMEZONE=""
+    log_info "skip_locale enabled; locale configuration variables have been cleared."
+  fi
+fi
+
+
 # Environment variables (allowed to be not set)
 required_vars=(
   OSI_LOCALE
@@ -154,6 +176,16 @@ setup_locale_target() {
   fi
 }
 
+# Function: setup_keyboard_target
+setup_keyboard_target() {
+  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ]; then
+    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
+    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
+  else
+    log_info "Keyboard layout variable not provided, skipping keyboard configuration."
+  fi
+}
+
 # Function: setup_formats_target
 setup_formats_target() {
   if [ -n "${OSI_FORMATS:-}" ]; then
@@ -162,16 +194,6 @@ setup_formats_target() {
     run_in_target "localectl set-locale ${OSI_FORMATS}"
   else
     log_info "Formats variable not provided, skipping formats configuration."
-  fi
-}
-
-# Function: setup_keyboard_target
-setup_keyboard_target() {
-  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ]; then
-    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
-    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
-  else
-    log_info "Keyboard layout variable not provided, skipping keyboard configuration."
   fi
 }
 
