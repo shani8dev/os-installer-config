@@ -526,13 +526,12 @@ main() {
   setup_hostname_target
   setup_machine_id_target
   
-  setup_locale_target
-  setup_keyboard_target
-  
   # If SKIP_LOCALE is set to "yes", skip locale, keyboard, and timezone configuration.
   if [[ "${SKIP_LOCALE:-}" == "yes" ]]; then
     log_info "Skipping locale, keyboard, and timezone configuration as per config."
   else
+    setup_locale_target
+    setup_keyboard_target
     setup_formats_target
     setup_timezone_target
   fi
