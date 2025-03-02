@@ -522,15 +522,30 @@ main() {
   mount_target
   mount_additional_subvols
   mount_overlay
-
-  setup_locale_target
-  setup_keyboard_target
-  setup_timezone_target
+  
   setup_hostname_target
   setup_machine_id_target
-  setup_user_target
-  set_root_password
-  setup_autologin_target
+  
+  setup_locale_target
+  setup_keyboard_target
+  
+  # If SKIP_LOCALE is set to "yes", skip locale, keyboard, and timezone configuration.
+  if [[ "${SKIP_LOCALE:-}" == "yes" ]]; then
+    log_info "Skipping locale, keyboard, and timezone configuration as per config."
+  else
+    setup_formats_target
+    setup_timezone_target
+  fi
+
+  # If SKIP_USER is set to "yes", skip user configuration.
+  if [[ "${SKIP_USER:-}" == "yes" ]]; then
+    log_info "Skipping user configuration as per config."
+  else
+    setup_user_target
+    set_root_password
+    setup_autologin_target
+  fi
+
   setup_plymouth_theme_target
   generate_mok_keys_target
   install_secureboot_components_target

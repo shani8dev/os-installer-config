@@ -15,9 +15,9 @@ suggested_languages:
 welcome_page:
     logo: '/usr/share/pixmaps/shanios-logo.png'
     text: |
-      # Welcome to Shani OS!
+      Welcome to Shani OS!
 
-      **An Immutable OS for Ultimate Reliability**
+      An Immutable OS for Ultimate Reliability
 
       This installer will guide you through a quick and secure setup.
 
