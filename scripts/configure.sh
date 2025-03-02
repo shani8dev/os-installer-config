@@ -19,7 +19,7 @@ UKI_BOOT_ENTRY="/boot/efi/loader/entries"
 CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
 # Read installer configuration for skip flags
-CONFIG_FILE="/etc/os-installer/config.yml"
+CONFIG_FILE="/etc/os-installer/config.yaml"
 if [[ -f "${CONFIG_FILE}" ]]; then
   # Assumes a simple YAML with lines like "skip_user: yes"
   SKIP_USER=$(grep -E '^skip_user:' "${CONFIG_FILE}" | awk '{print $2}')
