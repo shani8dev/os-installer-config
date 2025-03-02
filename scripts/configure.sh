@@ -29,13 +29,13 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     export OSI_USER_NAME=""
     export OSI_USER_PASSWORD=""
     export OSI_USER_AUTOLOGIN=""
-    log_info "skip_user enabled; user configuration variables have been cleared."
   fi
 
   if [[ "${SKIP_LOCALE}" == "yes" ]]; then
+    export OSI_LOCALE=""
+    export OSI_KEYBOARD_LAYOUT=""
     export OSI_FORMATS=""
     export OSI_TIMEZONE=""
-    log_info "skip_locale enabled; locale configuration variables have been cleared."
   fi
 fi
 

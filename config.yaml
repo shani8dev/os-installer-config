@@ -7,7 +7,7 @@ internet_connection_required: no
 
 internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
 
-fixed_language: no
+fixed_language: en
 
 suggested_languages:
     - 'en'
