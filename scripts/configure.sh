@@ -280,6 +280,7 @@ install_secureboot_components_target() {
   run_in_target "mkdir -p /boot/efi/EFI/BOOT && \
     cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI && \
     cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi && \
+    cp /usr/share/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/MOK.der && \
     cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
 }
 
