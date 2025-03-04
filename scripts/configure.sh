@@ -107,6 +107,7 @@ mount_additional_subvols() {
   declare -A subvols=(
     ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@cache"]="/var/cache|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
