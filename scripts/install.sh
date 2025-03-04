@@ -135,7 +135,7 @@ create_subvolumes() {
     fi
   done
 
-  local data_dirs=( "overlay/etc/lower" "overlay/etc/upper" "overlay/etc/work" "downloads" )
+  local data_dirs=( "overlay/etc/lower" "overlay/etc/upper" "overlay/etc/work" "overlay/var/lower" "overlay/var/upper" "overlay/var/work" "downloads" )
   for dir in "${data_dirs[@]}"; do
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then

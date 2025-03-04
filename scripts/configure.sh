@@ -127,9 +127,13 @@ mount_additional_subvols() {
 # Function: mount_overlay
 # Configure an overlay mount for /etc.
 mount_overlay() {
-  log_info "Configuring overlay for /etc"
+  log_info "Configuring overlay for /etc and /var"
 
-  # Create necessary overlay directories in the data subvolume (matching fstab paths)
+  #############################
+  # Configure overlay for /etc
+  #############################
+  # Create necessary overlay directories for /etc in the data subvolume
+
   sudo mkdir -p "${TARGET}/data/overlay/etc/lower" \
                "${TARGET}/data/overlay/etc/upper" \
                "${TARGET}/data/overlay/etc/work"
@@ -141,6 +145,22 @@ mount_overlay() {
   # Mount the overlay using the correct lower, upper, and work directories
   log_info "Mounting overlay on /etc"
   sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
+
+  #############################
+  # Configure overlay for /var
+  #############################
+  # Create directories for the /var overlay in the data subvolume
+  sudo mkdir -p "${TARGET}/data/overlay/var/lower" \
+               "${TARGET}/data/overlay/var/upper" \
+               "${TARGET}/data/overlay/var/work"
+  sudo chmod 0755 "${TARGET}/data/overlay/var/lower" \
+                  "${TARGET}/data/overlay/var/upper" \
+                  "${TARGET}/data/overlay/var/work"
+
+  # Mount the overlay using the correct lower, upper, and work directories
+  log_info "Mounting overlay on /var"
+  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
+
 }
 
 # Function: run_in_target
@@ -264,13 +284,13 @@ setup_plymouth_theme_target() {
 # Function: generate_mok_keys_target
 generate_mok_keys_target() {
   log_info "Generating MOK keys for secure boot"
-  run_in_target "mkdir -p /usr/share/secureboot/keys && \
-    if [ ! -f /usr/share/secureboot/keys/MOK.key ]; then
-      openssl req -newkey rsa:2048 -nodes -keyout /usr/share/secureboot/keys/MOK.key \
-        -new -x509 -sha256 -days 3650 -out /usr/share/secureboot/keys/MOK.crt \
+  run_in_target "mkdir -p /etc/secureboot/keys && \
+    if [ ! -f /etc/secureboot/keys/MOK.key ]; then
+      openssl req -newkey rsa:2048 -nodes -keyout /etc/secureboot/keys/MOK.key \
+        -new -x509 -sha256 -days 3650 -out /etc/secureboot/keys/MOK.crt \
         -subj '/CN=Shani OS Secure Boot Key/' && \
-      openssl x509 -in /usr/share/secureboot/keys/MOK.crt -outform DER -out /usr/share/secureboot/keys/MOK.der && \
-      chmod 0600 /usr/share/secureboot/keys/MOK.key
+      openssl x509 -in /etc/secureboot/keys/MOK.crt -outform DER -out /etc/secureboot/keys/MOK.der && \
+      chmod 0600 /etc/secureboot/keys/MOK.key
     fi"
 }
 
@@ -280,7 +300,7 @@ install_secureboot_components_target() {
   run_in_target "mkdir -p /boot/efi/EFI/BOOT && \
     cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI && \
     cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi && \
-    cp /usr/share/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/MOK.der && \
+    cp /etc/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/MOK.der && \
     cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
 
   sign_efi_binary "/boot/efi/EFI/BOOT/grubx64.efi"
@@ -290,7 +310,7 @@ install_secureboot_components_target() {
 sign_efi_binary() {
   local binary="$1"
   log_info "Signing EFI binary ${binary}"
-  run_in_target "sbsign --key /usr/share/secureboot/keys/MOK.key --cert /usr/share/secureboot/keys/MOK.crt --output ${binary} ${binary} && sbverify --cert /usr/share/secureboot/keys/MOK.crt ${binary}"
+  run_in_target "sbsign --key /etc/secureboot/keys/MOK.key --cert /etc/secureboot/keys/MOK.crt --output ${binary} ${binary} && sbverify --cert /etc/secureboot/keys/MOK.crt ${binary}"
 }
 
 move_keyfile_to_systemd() {
@@ -461,7 +481,7 @@ generate_loader_conf() {
 enroll_mok_key_target() {
   if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
     log_info "Enrolling MOK key for secure boot"
-    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /usr/share/secureboot/keys/MOK.der"
+    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /etc/secureboot/keys/MOK.der"
   else
     log_warn "Skipping MOK key enrollment because OSI_USER_PASSWORD is not provided"
   fi
