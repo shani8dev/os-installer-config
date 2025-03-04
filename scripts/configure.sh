@@ -95,7 +95,7 @@ mount_target() {
   for fs in proc sys dev run; do
     sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
   done
-  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
+  sudo mount /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
 }
 
 # Function: mount_additional_subvols
@@ -282,6 +282,8 @@ install_secureboot_components_target() {
     cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi && \
     cp /usr/share/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/MOK.der && \
     cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
+
+  sign_efi_binary "/boot/efi/EFI/BOOT/grubx64.efi"
 }
 
 # Function: sign_efi_binary
