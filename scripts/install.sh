@@ -66,7 +66,8 @@ ROOTFSZST_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/rootfs.zst"
 FLATPAKFS_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/flatpakfs.zst"
 
 SWAPFILE_PATH="@swap/swapfile"  # Under the @swap subvolume
-SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{printf "%d", ($2 > 16384 ? 16384 : $2)}')
+# Calculate swapfile size equal to total RAM (in MB)
+SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
 
 # Pre-check critical files
 [[ ! -f "${PART_LAYOUT}" ]] && { log_error "Partition layout file not found at ${PART_LAYOUT}"; exit 1; }
