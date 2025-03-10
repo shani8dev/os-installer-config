@@ -3,14 +3,23 @@
 
 distribution_name: 'Shani OS'
 
-internet_connection_required: no
+# Default: None
+scripts:
+  prepare: /etc/os-installer/scripts/prepare.sh
+  install: /etc/os-installer/scripts/install.sh
+  configure: /etc/os-installer/scripts/configure.sh
 
-internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+
+# Configure whether an internet connection is required. Optionally set what
+# URL/IP address is used to check for an existing internet connection.
+#
+# Default: connection_required: yes, checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+internet:
+  connection_required: no
+  checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+
 
 fixed_language: en
-
-suggested_languages:
-    - 'en'
 
 welcome_page:
     logo: '/usr/share/pixmaps/shanios-logo.png'
@@ -23,9 +32,18 @@ welcome_page:
 
       Let's begin!
     usage: yes
-# Minimum disk size needed for the installation (in Gigabyte)
-# Default: 5
-minimum_disk_size: 64
+
+# Disk requirements for installation
+#
+# partition_ok  Whether partitions are accepted as installation targets
+#                (Otherwise only complete disks can be used)
+# min_size       Minimum size needed for installation (in Gigabyte)
+#
+# Default: partition_ok: no, min_size: 5
+disk:
+  partition_ok: no
+  min_size: 64
+
 
 # Disk encryption PIN setup.
 #
