@@ -3,6 +3,20 @@
 # This script partitions the disk, creates filesystems, and sets up a dual-root
 # immutable system using Btrfs with a blue–green deployment strategy. It creates
 # subvolumes, extracts system images, sets up data directories, and creates a swapfile.
+#
+# It expects the PART_LAYOUT file to contain:
+#
+#   label: gpt
+#   unit: sectors
+#   sector-size: 512
+#
+#   # Create a FAT32 partition for the EFI system (1GB)
+#   start=2048, size=2048000, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+#
+#   # Create a Btrfs partition for root (uses all remaining space)
+#   start=2050048, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+#
+# Partition 1 is for EFI; partition 2 (root) will be used for Btrfs.
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -59,6 +73,23 @@ SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{printf "%d", ($2 > 16384 ? 16384 : $2)}')
 [[ ! -f "${ROOTFSZST_SOURCE}" ]] && { log_error "System image not found at ${ROOTFSZST_SOURCE}"; exit 1; }
 [[ ! -f "${FLATPAKFS_SOURCE}" ]] && { log_error "Flatpak image not found at ${FLATPAKFS_SOURCE}"; exit 1; }
 
+# Function: get_partition_prefix
+# Appends "p" to OSI_DEVICE_PATH if it is an NVMe or MMC/eMMC device.
+get_partition_prefix() {
+  if [[ "${OSI_DEVICE_PATH}" =~ ^/dev/nvme[0-9]+n[0-9]+$ ]] || [[ "${OSI_DEVICE_PATH}" =~ ^/dev/mmcblk[0-9]+$ ]]; then
+    echo "${OSI_DEVICE_PATH}p"
+  else
+    echo "${OSI_DEVICE_PATH}"
+  fi
+}
+
+# Determine partition prefix once if applicable.
+if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
+  PARTITION_PREFIX=$(get_partition_prefix)
+else
+  PARTITION_PREFIX=""
+fi
+
 # Function: extract_image
 # Decompress an image with zstd and load it into a Btrfs subvolume.
 extract_image() {
@@ -73,16 +104,14 @@ log_info "Starting disk setup..."
 
 # Function: do_partitioning
 do_partitioning() {
+  log_info "Forcing ${OSI_DEVICE_PATH} to read-write mode."
+  sudo blockdev --setrw "${OSI_DEVICE_PATH}" || { log_warn "Could not force device to read-write mode; proceeding anyway." ; }
+  
   log_info "Partitioning disk at ${OSI_DEVICE_PATH}"
-  local partition_prefix=""
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
-	if [[ "${OSI_DEVICE_PATH}" =~ ^/dev/nvme[0-9]+n[0-9]+$ ]]; then
-	  partition_prefix="${OSI_DEVICE_PATH}p"
-    else
-      partition_prefix="${OSI_DEVICE_PATH}"
-    fi
     sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
-    ROOT_PARTITION="${partition_prefix}2"
+    # According to the provided layout, EFI is partition 1 and root is partition 2.
+    ROOT_PARTITION="${PARTITION_PREFIX}2"
   else
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
@@ -99,14 +128,14 @@ create_filesystems() {
       log_info "Setting up LUKS encryption on ${ROOT_PARTITION} using provided encryption PIN"
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
-	else
-	  log_info "No encryption PIN provided; generating keyfile in EFI partition"
-	  sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
-	  sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
-	  sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-	  sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-	  export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"  # Target-relative path
-	fi
+    else
+      log_info "No encryption PIN provided; generating keyfile in EFI partition"
+      sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
+      sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
+      sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+      sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+      export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"  # Target-relative path
+    fi
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
     BTRFS_TARGET="${ROOT_PARTITION}"
@@ -115,14 +144,13 @@ create_filesystems() {
   sudo mkfs.btrfs -f -L "${ROOTLABEL}" "${BTRFS_TARGET}" || { log_error "Btrfs filesystem creation failed"; exit 1; }
 }
 
-
 # Function: mount_top_level
 mount_top_level() {
   log_info "Mounting Btrfs top-level filesystem on /mnt"
   sudo mount -o "${BTRFS_TOP_OPTS}" "${BTRFS_TARGET}" /mnt || { log_error "Mounting top-level filesystem failed"; exit 1; }
 }
 
-# Function: create_subvolumes do not create subvol for @blue @green @flatpak since we snapshot the base subvols
+# Function: create_subvolumes (do not create subvol for @blue, @green, @flatpak since we snapshot the base subvols)
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
   local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@swap" )
