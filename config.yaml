@@ -23,10 +23,38 @@ welcome_page:
 
       Let's begin!
     usage: yes
-
+# Minimum disk size needed for the installation (in Gigabyte)
+# Default: 5
 minimum_disk_size: 64
 
-offer_disk_encryption: yes
+# Disk encryption PIN setup.
+#
+# offered      Whether to offer disk encryption pin setup.
+# forced       Whether to requrie a disk encryption pin.
+# min_length   Minimal encryption pin length.
+# confirmation Require pin to be entered a second time.
+#
+# Default: offered: yes, forced: no, min_length: 1, confirmation: no
+disk_encryption:
+  offered: yes
+  forced: no
+  min_length: 0
+  confirmation: yes
+
+# User setup requests a printable name and a password by default.
+#
+# request_username      Request a username. Otherwise generated from name.
+# provide_autologin     Whether to present an autologin option.
+# min_password_length   Minimal password length.
+# password_confirmation Require password to be entered a second time.
+#
+# Default: request_username: no, provide_autologin: no, min_password_length: 1, password_confirmation: no
+user:
+  request_username: no
+  provide_autologin: True
+  min_password_length: 1
+  password_confirmation: yes
+
 
 # gnome-initial-setup can handle user and locale setup.
 # These settings allow to disable these pages.
