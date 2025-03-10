@@ -124,21 +124,21 @@ log_info "Starting disk setup..."
 # If using a pre-partitioned device, assign EFI_PARTITION from OSI_DEVICE_EFI_PARTITION.
 do_partitioning() {
   log_info "Setting ${OSI_DEVICE_PATH} to read-write mode."
-  sudo blockdev --setrw "${OSI_DEVICE_PATH}" || { log_warn "Could not force device to read-write mode; proceeding anyway."; }
+  sudo blockdev --setrw "${OSI_DEVICE_PATH}" || log_warn "Could not force device to read-write mode; proceeding anyway."
   
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
     sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
-    # Assume partition 1 is EFI and partition 2 is root.
+    # For whole disk, derive partitions: Partition 1 (EFI), Partition 2 (root).
     EFI_PARTITION="${PARTITION_PREFIX}1"
     ROOT_PARTITION="${PARTITION_PREFIX}2"
   else
-    log_info "Using pre-partitioned device. Using OSI_DEVICE_EFI_PARTITION for EFI and OSI_DEVICE_PATH for root."
+    log_info "Using pre-partitioned device. EFI partition set from OSI_DEVICE_EFI_PARTITION."
     EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION}"
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
-  log_info "EFI partition set to ${EFI_PARTITION}"
-  log_info "Root partition set to ${ROOT_PARTITION}"
+  log_info "EFI partition: ${EFI_PARTITION}"
+  log_info "Root partition: ${ROOT_PARTITION}"
 }
 
 # Function: mount_boot_partition
@@ -153,16 +153,10 @@ mount_boot_partition() {
 # Function: create_filesystems
 # Format and mount the EFI partition and create the Btrfs filesystem on the root partition.
 create_filesystems() {
-  # Format and mount the EFI partition.
-  if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 1 ]]; then
-    log_info "Formatting provided EFI partition (${OSI_DEVICE_EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
-    sudo mkfs.fat -F32 "${OSI_DEVICE_EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
-    mount_boot_partition "${OSI_DEVICE_EFI_PARTITION}"
-  else
-    log_info "Formatting derived EFI partition (${EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
-    sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
-    mount_boot_partition "${EFI_PARTITION}"
-  fi
+  # Format and mount the EFI partition using the global EFI_PARTITION variable.
+  log_info "Formatting EFI partition (${EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
+  sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
+  mount_boot_partition "${EFI_PARTITION}"
 
   # Set up encryption on the root partition if requested.
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
@@ -171,22 +165,18 @@ create_filesystems() {
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
     else
-      if [ -n "${EFI_PARTITION:-}" ]; then
-        log_info "No encryption PIN provided; generating keyfile in EFI partition"
-        sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
-        sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
-        sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-        sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-        export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"
-      else
-        log_error "Encryption PIN not provided and no EFI partition available for keyfile generation."
-        exit 1
-      fi
+      log_info "No encryption PIN provided; generating keyfile in EFI partition"
+      sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
+      sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
+      sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+      sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+      export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"
     fi
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
     BTRFS_TARGET="${ROOT_PARTITION}"
   fi
+
   log_info "Creating Btrfs filesystem on ${BTRFS_TARGET} with label ${ROOTLABEL}"
   sudo mkfs.btrfs -f -L "${ROOTLABEL}" "${BTRFS_TARGET}" || { log_error "Btrfs filesystem creation failed"; exit 1; }
 }
