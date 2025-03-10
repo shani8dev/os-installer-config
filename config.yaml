@@ -39,7 +39,7 @@ disk_encryption:
   offered: yes
   forced: no
   min_length: 0
-  confirmation: yes
+  confirmation: no
 
 # User setup requests a printable name and a password by default.
 #

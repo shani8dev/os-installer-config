@@ -1,22 +1,20 @@
 #!/bin/bash
 # install.sh – Disk partitioning, filesystem creation, and blue–green layout.
 # This script partitions the disk, creates filesystems, and sets up a dual-root
-# immutable system using Btrfs with a blue–green deployment strategy. It creates
-# subvolumes, extracts system images, sets up data directories, and creates a swapfile.
+# immutable system using Btrfs with a blue–green deployment strategy.
 #
-# It expects the PART_LAYOUT file to contain:
+# When OSI_DEVICE_IS_PARTITION=0 (whole device), the EFI partition is derived from the
+# partition layout file (assumed to be partition 1). When OSI_DEVICE_IS_PARTITION=1 (a partition),
+# you must supply OSI_DEVICE_EFI_PARTITION, and it is used later.
 #
-#   label: gpt
-#   unit: sectors
-#   sector-size: 512
+# Expected environment variables:
+#   OSI_DEVICE_PATH        – Path to the device (e.g. /dev/sda or /dev/nvme0n1)
+#   OSI_DEVICE_IS_PARTITION – 0 if whole device, 1 if a partition is selected
+#   OSI_DEVICE_EFI_PARTITION – Required only if OSI_DEVICE_IS_PARTITION=1; the EFI partition path.
+#   OSI_USE_ENCRYPTION     – 1 to enable encryption, 0 otherwise.
+#   OSI_ENCRYPTION_PIN     – (Optional) PIN for encryption (if not provided, keyfile will be generated)
 #
-#   # Create a FAT32 partition for the EFI system (1GB)
-#   start=2048, size=2048000, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
-#
-#   # Create a Btrfs partition for root (uses all remaining space)
-#   start=2050048, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
-#
-# Partition 1 is for EFI; partition 2 (root) will be used for Btrfs.
+# The PART_LAYOUT file is expected at: ${OSIDIR}/bits/part.sfdisk
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -27,24 +25,23 @@ log_info() { echo "[INSTALL][INFO] $*"; }
 log_warn() { echo "[INSTALL][WARN] $*" >&2; }
 log_error() { echo "[INSTALL][ERROR] $*" >&2; }
 
-# Check if required commands exist.
-check_command() {
-  command -v "$1" &>/dev/null || { log_error "Required command '$1' not found."; exit 1; }
-}
+# Validate required commands.
 for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk; do
-  check_command "$cmd"
+  command -v "$cmd" &>/dev/null || { log_error "Required command '$cmd' not found."; exit 1; }
 done
 
-# Validate required environment variables.
+# Environment check: OSI_DEVICE_EFI_PARTITION is required only when OSI_DEVICE_IS_PARTITION is 1.
 check_env() {
   local missing_vars=()
-  local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_EFI_PARTITION OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
+  local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
+  if [ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]; then
+    required_vars+=(OSI_DEVICE_EFI_PARTITION)
+  fi
   for var in "${required_vars[@]}"; do
     [ -z "${!var:-}" ] && missing_vars+=("$var")
   done
   if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
-    log_info "No OSI_ENCRYPTION_PIN provided; will use keyfile-based unlocking."
-    # We intentionally do not add OSI_ENCRYPTION_PIN to missing_vars here.
+    log_info "No OSI_ENCRYPTION_PIN provided; keyfile-based unlocking will be used."
   fi
   if [ ${#missing_vars[@]} -gt 0 ]; then
     log_error "Missing required environment variables: ${missing_vars[*]}"
@@ -84,58 +81,69 @@ get_partition_prefix() {
   fi
 }
 
-# Determine partition prefix once if applicable.
+# Determine partition prefix if applicable.
 if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
   PARTITION_PREFIX=$(get_partition_prefix)
 else
   PARTITION_PREFIX=""
 fi
 
-# Function: extract_image
-# Decompress an image with zstd and load it into a Btrfs subvolume.
-extract_image() {
-  local src="$1"
-  local dest="$2"
-  log_info "Extracting image from ${src} into ${dest}"
-  sudo zstd -d --long=31 -T0 "${src}" -c | sudo btrfs receive "${dest}" \
-    || { log_error "Image extraction from ${src} failed"; exit 1; }
-}
-
-log_info "Starting disk setup..."
-
 # Function: do_partitioning
 do_partitioning() {
-  log_info "Forcing ${OSI_DEVICE_PATH} to read-write mode."
-  sudo blockdev --setrw "${OSI_DEVICE_PATH}" || { log_warn "Could not force device to read-write mode; proceeding anyway." ; }
+  log_info "Setting ${OSI_DEVICE_PATH} to read-write mode."
+  sudo blockdev --setrw "${OSI_DEVICE_PATH}" || { log_warn "Could not force device to read-write mode; proceeding anyway."; }
   
-  log_info "Partitioning disk at ${OSI_DEVICE_PATH}"
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
+    log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
     sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
-    # According to the provided layout, EFI is partition 1 and root is partition 2.
+    # Derive partitions from layout: Partition 1 is EFI, Partition 2 is root.
+    EFI_PARTITION="${PARTITION_PREFIX}1"
     ROOT_PARTITION="${PARTITION_PREFIX}2"
   else
+    log_info "Using pre-partitioned device. Using OSI_DEVICE_EFI_PARTITION for EFI and OSI_DEVICE_PATH for root."
+    EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION}"
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
+  log_info "EFI partition set to ${EFI_PARTITION}"
   log_info "Root partition set to ${ROOT_PARTITION}"
+}
+
+# Function: mount_boot_partition
+mount_boot_partition() {
+  log_info "Mounting EFI partition (${EFI_PARTITION}) at /mnt/boot/efi"
+  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" /mnt/boot/efi \
+    || { log_error "EFI partition mount failed"; exit 1; }
 }
 
 # Function: create_filesystems
 create_filesystems() {
-  log_info "Formatting EFI partition (${OSI_DEVICE_EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
-  sudo mkfs.fat -F32 "${OSI_DEVICE_EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
-  mount_boot_partition
+  # Format and mount the EFI partition (if provided)
+  if [ -n "${EFI_PARTITION:-}" ]; then
+    log_info "Formatting EFI partition (${EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
+    sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
+    mount_boot_partition
+  else
+    log_info "No EFI partition provided; skipping EFI partition formatting."
+  fi
+
+  # Set up encryption if requested.
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     if [ -n "${OSI_ENCRYPTION_PIN:-}" ]; then
       log_info "Setting up LUKS encryption on ${ROOT_PARTITION} using provided encryption PIN"
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
       echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
     else
-      log_info "No encryption PIN provided; generating keyfile in EFI partition"
-      sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
-      sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
-      sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-      sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-      export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"  # Target-relative path
+      if [ -n "${EFI_PARTITION:-}" ]; then
+        log_info "No encryption PIN provided; generating keyfile in EFI partition"
+        sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
+        sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
+        sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+        sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
+        export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"
+      else
+        log_error "Encryption PIN not provided and no EFI partition available for keyfile generation."
+        exit 1
+      fi
     fi
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
@@ -151,7 +159,7 @@ mount_top_level() {
   sudo mount -o "${BTRFS_TOP_OPTS}" "${BTRFS_TARGET}" /mnt || { log_error "Mounting top-level filesystem failed"; exit 1; }
 }
 
-# Function: create_subvolumes (do not create subvol for @blue, @green, @flatpak since we snapshot the base subvols)
+# Function: create_subvolumes
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
   local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@swap" )
@@ -210,12 +218,6 @@ extract_flatpak_image() {
   sudo btrfs subvolume snapshot "/mnt/flatpak_subvol" "/mnt/@flatpak" || { log_error "Snapshot creation for @flatpak failed"; exit 1; }
   log_info "Deleting original subvolume flatpak_subvol"
   sudo btrfs subvolume delete "/mnt/flatpak_subvol" || log_warn "Could not delete flatpak_subvol; please remove manually later"
-}
-
-# Function: mount_boot_partition
-mount_boot_partition() {
-  log_info "Mounting EFI partition (${BOOTLABEL}) at /mnt/boot/efi"
-  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" /mnt/boot/efi || { log_error "EFI partition mount failed"; exit 1; }
 }
 
 # Function: create_swapfile
