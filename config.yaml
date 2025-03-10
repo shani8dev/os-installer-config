@@ -84,6 +84,14 @@ skip_locale: yes
 
 failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
 
-browser_cmd: 'firefox'
-disks_cmd: 'gnome-disks'
-wifi_cmd: 'gnome-control-center wifi'
+# Certain parts of the installer launch external programs. These can be configured here.
+# Note: For calling the command, the string is split up by spaces.
+#
+# The browser_cmd will be called followed by a url.
+#
+# Default: browser: 'epiphany', disks: 'gnome-disks', reboot: 'reboot', wifi: 'gnome-control-center wifi'
+commands:
+  browser: 'firefox'
+  disks  : 'gnome-disks'
+  reboot : 'shutdown -r now'
+  wifi   : 'gnome-control-center wifi'
