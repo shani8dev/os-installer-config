@@ -1,0 +1,102 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the os-installer package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: os-installer-config\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2023-08-18 03:39+0100\n"
+"PO-Revision-Date: 2024-03-10 23:17+0100\n"
+"Last-Translator: \n"
+"Language-Team: \n"
+"Language: de_DE\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: Poedit 3.3.2\n"
+
+msgid "A welcoming text to inform about the installation."
+msgstr "Ein Begrüßungstext, um die Installation zu erklären."
+
+msgid "GNOME"
+msgstr ""
+
+msgid "Simple desktop that can be personalized with extensions."
+msgstr "Einfacher Desktop der mit Erweiterungen personalisiert werden kann."
+
+msgid "KDE Plasma"
+msgstr ""
+
+msgid "Configurable desktop that is similar to Windows."
+msgstr "Konfigurierbarer Desktop der Ähnlichkeiten mit Windows hat."
+
+msgid "Xfce"
+msgstr ""
+
+msgid "Lightweight desktop with focus on modularity."
+msgstr "Leichtgewichtiger Desktop mit Fokus auf Modularität."
+
+msgid "Enlightenment"
+msgstr ""
+
+msgid "Highly configurable, lightweight desktop for tinkerers."
+msgstr "Hochgradig konfigurierbarer, leichtgewichtiger Desktop für Bastler."
+
+msgid "Firefox"
+msgstr "Firefox"
+
+msgid "Popular Web Browser from Mozilla"
+msgstr "Beliebter Internet-Browser von Mozilla"
+
+msgid "Chr👁️me"
+msgstr ""
+
+msgid "Spyware made by big brother"
+msgstr "Spyware hergestellt von Big Brother"
+
+msgid "Files"
+msgstr "Dateien"
+
+msgid "Access and organize files"
+msgstr "Auf Dateien zugreifen und diese organisieren"
+
+msgid "Optional Option"
+msgstr "Optionale Option"
+
+msgid "Select your favorite option"
+msgstr "Wählen Sie Ihre bevorzugte Option aus"
+
+msgid "Nothing"
+msgstr "Nichts"
+
+msgid "Option 1"
+msgstr "Option 1"
+
+msgid "Option 2"
+msgstr "Option 2"
+
+msgid "Dummy Feature"
+msgstr "Funktionsattrappe"
+
+msgid "Does not do anything"
+msgstr "Tut nichts"
+
+msgid "Snapshots"
+msgstr "Snapshots"
+
+msgid "Snapshots allow restoring a previous state of your system"
+msgstr "Snapshots ermöglichen es, vorherige Systemzustände wiederherzustellen"
+
+msgid "Background Image"
+msgstr "Hintergrundbild"
+
+msgid "Axolotls"
+msgstr "Axolotl"
+
+msgid "Cats"
+msgstr "Katzen"
+
+msgid "Dogs"
+msgstr "Hunde"

@@ -1,0 +1,102 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the os-installer package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: os-installer-config\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2023-08-18 03:39+0100\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "A welcoming text to inform about the installation."
+msgstr ""
+
+msgid "GNOME"
+msgstr ""
+
+msgid "Simple desktop that can be personalized with extensions."
+msgstr ""
+
+msgid "KDE Plasma"
+msgstr ""
+
+msgid "Configurable desktop that is similar to Windows."
+msgstr ""
+
+msgid "Xfce"
+msgstr ""
+
+msgid "Lightweight desktop with focus on modularity."
+msgstr ""
+
+msgid "Enlightenment"
+msgstr ""
+
+msgid "Highly configurable, lightweight desktop for tinkerers."
+msgstr ""
+
+msgid "Firefox"
+msgstr ""
+
+msgid "Popular Web Browser from Mozilla"
+msgstr ""
+
+msgid "Chr👁️me"
+msgstr ""
+
+msgid "Spyware made by big brother"
+msgstr ""
+
+msgid "Files"
+msgstr ""
+
+msgid "Access and organize files"
+msgstr ""
+
+msgid "Optional Option"
+msgstr ""
+
+msgid "Select your favorite option"
+msgstr ""
+
+msgid "Nothing"
+msgstr ""
+
+msgid "Option 1"
+msgstr ""
+
+msgid "Option 2"
+msgstr ""
+
+msgid "Dummy Feature"
+msgstr ""
+
+msgid "Does not do anything"
+msgstr ""
+
+msgid "Snapshots"
+msgstr ""
+
+msgid "Snapshots allow restoring a previous state of your system"
+msgstr ""
+
+msgid "Background Image"
+msgstr ""
+
+msgid "Axolotls"
+msgstr ""
+
+msgid "Cats"
+msgstr ""
+
+msgid "Dogs"
+msgstr ""
+
