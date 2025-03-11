@@ -3,14 +3,23 @@
 
 distribution_name: 'Shani OS'
 
-internet_connection_required: no
+# Default: None
+scripts:
+  prepare: /etc/os-installer/scripts/prepare.sh
+  install: /etc/os-installer/scripts/install.sh
+  configure: /etc/os-installer/scripts/configure.sh
 
-internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+
+# Configure whether an internet connection is required. Optionally set what
+# URL/IP address is used to check for an existing internet connection.
+#
+# Default: connection_required: yes, checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+internet:
+  connection_required: no
+  checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+
 
 fixed_language: en
-
-suggested_languages:
-    - 'en'
 
 welcome_page:
     logo: '/usr/share/pixmaps/shanios-logo.png'
@@ -23,9 +32,18 @@ welcome_page:
 
       Let's begin!
     usage: yes
-# Minimum disk size needed for the installation (in Gigabyte)
-# Default: 5
-minimum_disk_size: 64
+
+# Disk requirements for installation
+#
+# partition_ok  Whether partitions are accepted as installation targets
+#                (Otherwise only complete disks can be used)
+# min_size       Minimum size needed for installation (in Gigabyte)
+#
+# Default: partition_ok: no, min_size: 5
+disk:
+  partition_ok: no
+  min_size: 64
+
 
 # Disk encryption PIN setup.
 #
@@ -38,8 +56,8 @@ minimum_disk_size: 64
 disk_encryption:
   offered: yes
   forced: no
-  min_length: 1
-  confirmation: yes
+  min_length: 0
+  confirmation: no
 
 # User setup requests a printable name and a password by default.
 #
@@ -66,6 +84,14 @@ skip_locale: yes
 
 failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
 
-browser_cmd: 'firefox'
-disks_cmd: 'gnome-disks'
-wifi_cmd: 'gnome-control-center wifi'
+# Certain parts of the installer launch external programs. These can be configured here.
+# Note: For calling the command, the string is split up by spaces.
+#
+# The browser_cmd will be called followed by a url.
+#
+# Default: browser: 'epiphany', disks: 'gnome-disks', reboot: 'reboot', wifi: 'gnome-control-center wifi'
+commands:
+  browser: 'firefox'
+  disks  : 'gnome-disks'
+  reboot : 'sudo poweroff'
+  wifi   : 'gnome-control-center wifi'

@@ -54,8 +54,10 @@ done
 check_env() {
   local missing_vars=()
   local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
-  if [ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]; then
-    required_vars+=(OSI_DEVICE_EFI_PARTITION)
+  if [[ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]]; then
+    if [[ -z "${OSI_DEVICE_EFI_PARTITION+x}" ]]; then
+      log_warn "OSI_DEVICE_EFI_PARTITION is not set. Will be assuming 1st partition as efi."
+    fi
   fi
   for var in "${required_vars[@]}"; do
     [ -z "${!var:-}" ] && missing_vars+=("$var")
@@ -68,6 +70,7 @@ check_env() {
     exit 1
   fi
 }
+
 check_env
 
 ### Configuration variables
@@ -133,13 +136,14 @@ do_partitioning() {
     EFI_PARTITION="${PARTITION_PREFIX}1"
     ROOT_PARTITION="${PARTITION_PREFIX}2"
   else
-    log_info "Using pre-partitioned device. EFI partition set from OSI_DEVICE_EFI_PARTITION."
-    EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION}"
+    log_info "Using pre-partitioned device."
+    EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION:-${PARTITION_PREFIX}1}"
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
   log_info "EFI partition: ${EFI_PARTITION}"
   log_info "Root partition: ${ROOT_PARTITION}"
 }
+
 
 # Function: mount_boot_partition
 # Mount the EFI partition at /mnt/boot/efi. The function takes the EFI device as a parameter.
