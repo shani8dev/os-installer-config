@@ -93,5 +93,5 @@ failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installat
 commands:
   browser: 'firefox'
   disks  : 'gnome-disks'
-  reboot : 'shutdown -r now'
+  reboot : 'sudo poweroff'
   wifi   : 'gnome-control-center wifi'
