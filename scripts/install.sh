@@ -138,6 +138,7 @@ do_partitioning() {
   else
     log_info "Using pre-partitioned device."
     EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION:-${PARTITION_PREFIX}1}"
+    [[ "$EFI_PARTITION" =~ ^[0-9]+$ ]] && EFI_PARTITION="${PARTITION_PREFIX}${EFI_PARTITION}"
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
   log_info "EFI partition: ${EFI_PARTITION}"
