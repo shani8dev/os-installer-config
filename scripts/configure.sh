@@ -92,7 +92,7 @@ mount_target() {
   log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
   sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
   
-  for fs in proc sys dev run; do
+  for fs in proc sys dev run sys/firmware/efi/efivars; do
     sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
   done
   sudo mount /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
@@ -458,6 +458,14 @@ generate_uki_entry() {
   fi
 
   run_in_target "echo '${cmdline}' > ${cmdfile}"
+  
+  # Determine Active or candidate suffix
+  local suffix=""
+  if [[ "$slot" == "$current_slot" ]]; then
+      suffix=" (Active)"
+  else
+      suffix=" (Candidate)"
+  fi
 
   # Generate the bootable EFI image.
   local kernel_version
@@ -468,7 +476,7 @@ generate_uki_entry() {
   sign_efi_binary "${uki_path}"
 
   # Create the UEFI boot entry configuration using printf instead of a heredoc.
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf"
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf"
 }
 
 # Function: generate_loader_conf
@@ -476,6 +484,9 @@ generate_loader_conf() {
   local slot="$1"
   # Update the loader configuration using printf instead of a heredoc.
   run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\n' > /boot/efi/loader/loader.conf"
+
+  # Set the active boot entry as default using bootctl.
+  run_in_target "bootctl set-default ${OS_NAME}-${current_slot}.conf" || log_warn "bootctl set-default failed"
 }
 
 # Function: enroll_mok_key_target
@@ -577,12 +588,12 @@ main() {
   crypt_dracut_conf             
 
   local current_slot
-  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}")
+  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
   local candidate_slot
   if [ "${current_slot}" == "blue" ]; then
-    candidate_slot="green"
+      candidate_slot="green"
   else
-    candidate_slot="blue"
+      candidate_slot="blue"
   fi
 
   generate_uki_entry "${current_slot}"
