@@ -33,7 +33,6 @@ if [[ -f "${CONFIG_FILE}" ]]; then
 
   if [[ "${SKIP_LOCALE}" == "yes" ]]; then
     export OSI_LOCALE=""
-    export OSI_KEYBOARD_LAYOUT=""
     export OSI_FORMATS=""
     export OSI_TIMEZONE=""
   fi
@@ -255,6 +254,22 @@ setup_autologin_target() {
     if run_in_target "command -v gdm >/dev/null"; then
       log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
       run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
+    elif run_in_target "command -v sddm >/dev/null"; then
+      log_info "Configuring SDDM autologin for ${OSI_USER_NAME}"
+      run_in_target "mkdir -p /etc/sddm.conf.d && printf '[Autologin]\nUser=${OSI_USER_NAME}\n' > /etc/sddm.conf.d/autologin.conf"
+    elif run_in_target "command -v greetd >/dev/null"; then
+      log_info "Configuring greetd autologin for ${OSI_USER_NAME}"
+      run_in_target "if [ -f /etc/greetd/config.toml ]; then \
+          sed -i 's/^user *= *.*/user = \"${OSI_USER_NAME}\"/' /etc/greetd/config.toml; \
+        else \
+          echo -e '[autologin]\nuser = \"${OSI_USER_NAME}\"' > /etc/greetd/config.toml; \
+        fi"
+    elif run_in_target "command -v lightdm >/dev/null"; then
+      log_info "Configuring LightDM autologin for ${OSI_USER_NAME}"
+      run_in_target "sed -i 's/^#*autologin-user=.*/autologin-user=${OSI_USER_NAME}/' /etc/lightdm/lightdm.conf"
+    elif run_in_target "command -v lxdm >/dev/null"; then
+      log_info "Configuring LXDM autologin for ${OSI_USER_NAME}"
+      run_in_target "sed -i 's/^#*autologin=.*/autologin=${OSI_USER_NAME}/' /etc/lxdm/lxdm.conf"
     else
       log_info "Configuring getty autologin for ${OSI_USER_NAME}"
       run_in_target "mkdir -p /etc/systemd/system/getty@tty1.service.d && printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin ${OSI_USER_NAME} --noclear %%I \$TERM\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf"
@@ -263,6 +278,7 @@ setup_autologin_target() {
     log_info "Autologin not enabled or required variables not provided, skipping autologin configuration."
   fi
 }
+
 
 # Function: set_root_password
 set_root_password() {
@@ -432,6 +448,11 @@ generate_uki_entry() {
 
   local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
+  # Append keyboard mapping parameter if OSI_KEYBOARD_LAYOUT is provided.
+  if [[ -n "${OSI_KEYBOARD_LAYOUT:-}" ]]; then
+    cmdline="${cmdline} rd.vconsole.keymap=${OSI_KEYBOARD_LAYOUT}"
+  fi
+
   # For resume settings, choose the appropriate UUID.
   local resume_uuid
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
@@ -489,67 +510,85 @@ generate_loader_conf() {
   run_in_target "bootctl set-default ${OS_NAME}-${current_slot}.conf" || log_warn "bootctl set-default failed"
 }
 
-# Function: enroll_mok_key_target
-enroll_mok_key_target() {
-  if [[ -n "${OSI_USER_PASSWORD:-}" ]]; then
-    log_info "Enrolling MOK key for secure boot"
-    run_in_target "printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import /etc/secureboot/keys/MOK.der"
-  else
-    log_warn "Skipping MOK key enrollment because OSI_USER_PASSWORD is not provided"
-  fi
-}
+setup_secureboot() {
+    local exit_code=0
+    local mount_needed=false
+    local mok_key="/etc/secureboot/keys/MOK.der"
+    local efivars="/sys/firmware/efi/efivars"
+    local secureboot_var="SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
 
-bypass_mok_prompt_target() {
-  local efivars="/sys/firmware/efi/efivars"
-  local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
-  local umount_needed=false
-
-  # Exit if system is not UEFI
-  if ! run_in_target "[ -d /sys/firmware/efi ]"; then
-    log_warn "Skipping MOK bypass: Non-UEFI system"
-    return 0
-  fi
-
-  log_info "Configuring Secure Boot validation bypass"
-
-  # Mount efivarfs if not already mounted
-  if ! run_in_target "grep -q ' ${efivars} ' /proc/mounts"; then
-    run_in_target "mount -t efivarfs efivarfs '${efivars}'" || {
-      log_warn "Failed to mount efivarfs"
-      return 1
-    }
-    umount_needed=true
-  fi
-
-  # Write EFI variable with correct attributes (NV+BS+RT)
-  local success=false
-  if run_in_target "command -v efivar >/dev/null"; then
-    if run_in_target "printf '\x01' | efivar -n '${mok_var}' -w -t 7 -f - >/dev/null 2>&1"; then
-      success=true
-    else
-      log_warn "Failed to set MokSBStateRT variable"
+    # Step 1: Verify UEFI environment
+    if [ ! -d "/sys/firmware/efi" ]; then
+        log_warn "Secure Boot setup: System is not UEFI"
+        return 0
     fi
-  else
-    log_warn "efivar tool not found in target system"
-  fi
 
-  # Verify the variable's data (skip 4-byte attributes)
-  if [[ "$success" == true ]]; then
-    if run_in_target "[ -f '${efivars}/${mok_var}' ] && \
-       [ \"\$(od -An -t u1 -j4 -N1 '${efivars}/${mok_var}' | tr -d ' \n')\" = '1' ]"; then
-      log_info "Secure Boot bypass confirmed"
-    else
-      log_warn "Bypass verification failed"
-      success=false
+    # Step 2: Check Secure Boot status
+    if ! command -v efivar >/dev/null; then
+        log_warn "Secure Boot setup requires 'efivar' package"
+        return 1
     fi
-  fi
 
-  # Unmount efivarfs if mounted by this function
-  if [[ "$umount_needed" == true ]]; then
-    run_in_target "umount '${efivars}'" || log_warn "Failed to unmount efivarfs"
-  fi
+    local sb_state=$(efivar -n "$secureboot_var" -d 2>/dev/null | \
+                    awk -F': ' '/Data:/ {print $2}' | tr -d ' ' | head -c2)
+    if [ "$sb_state" != "01" ]; then
+        log_info "Secure Boot not enabled (State: 0x${sb_state:-unknown})"
+        return 0
+    fi
 
-  [[ "$success" == true ]] || return 1
+    # Step 3: MOK Enrollment
+    if [[ -n "${OSI_USER_PASSWORD:-}" && -f "$mok_key" ]]; then
+        log_info "Attempting MOK key enrollment"
+        if command -v mokutil >/dev/null; then
+            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | \
+                 mokutil --import "$mok_key" >/dev/null; then
+                log_warn "MOK enrollment failed"
+                exit_code=1
+            else
+                log_info "MOK enrollment completed"
+            fi
+        else
+            log_warn "Skipping MOK enrollment: mokutil not found"
+            exit_code=1
+        fi
+    fi
+
+    # Step 4: Configure Secure Boot bypass
+    if ! grep -q " $efivars " /proc/mounts; then
+        log_info "Mounting efivarfs"
+        if mount -t efivarfs efivarfs "$efivars"; then
+            mount_needed=true
+        else
+            log_warn "Failed to mount efivarfs"
+            return 1
+        fi
+    fi
+
+    log_info "Setting Secure Boot bypass"
+    if ! printf '\x01' | efivar -n "$mok_var" -w -t 7 -f - >/dev/null 2>&1; then
+        log_warn "Failed to write EFI variable"
+        exit_code=1
+    fi
+
+    # Step 5: Verification
+    if ! dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | \
+         grep -q $'\x01'; then
+        log_warn "Bypass verification failed"
+        exit_code=1
+    else
+        log_info "Secure Boot bypass confirmed"
+    fi
+
+    # Cleanup
+    if $mount_needed; then
+        umount "$efivars" || {
+            log_warn "Failed to unmount efivarfs"
+            exit_code=1
+        }
+    fi
+
+    return $exit_code
 }
 
 # Main configuration function
@@ -599,7 +638,7 @@ main() {
   generate_uki_entry "${current_slot}"
   generate_uki_entry "${candidate_slot}"
   generate_loader_conf "${current_slot}"
-  enroll_mok_key_target
+  setup_secureboot
   log_info "Configuration completed successfully!"
 }
 
