@@ -512,7 +512,7 @@ generate_loader_conf() {
 
 setup_secureboot() {
     local exit_code=0
-    local mount_needed=false
+    local umount_needed=false
     local mok_key="/etc/secureboot/keys/MOK.der"
     local efivars="/sys/firmware/efi/efivars"
     local secureboot_var="SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
@@ -558,7 +558,7 @@ setup_secureboot() {
     if ! grep -q " $efivars " /proc/mounts; then
         log_info "Mounting efivarfs"
         if mount -t efivarfs efivarfs "$efivars"; then
-            mount_needed=true
+            umount_needed=true
         else
             log_warn "Failed to mount efivarfs"
             return 1
@@ -581,7 +581,7 @@ setup_secureboot() {
     fi
 
     # Cleanup
-    if $mount_needed; then
+    if $umount_needed; then
         umount "$efivars" || {
             log_warn "Failed to unmount efivarfs"
             exit_code=1
