@@ -298,6 +298,14 @@ setup_plymouth_theme_target() {
   run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt'; } > /etc/plymouth/plymouthd.conf"
 }
 
+# Function: setup_firewall_kdeconnect
+setup_firewall_kdeconnect() {
+  log_info "Configuring firewall for KDE Connect and GSConnect"
+  run_in_target "firewall-cmd --permanent --zone=public --add-service=kdeconnect"
+  run_in_target "firewall-cmd --permanent --zone=public --add-service=gsconnect"
+  log_info "Firewall rules added to permanent configuration. They will apply at boot."
+}
+
 # Function: generate_mok_keys_target
 generate_mok_keys_target() {
   log_info "Generating MOK keys for secure boot"
@@ -620,6 +628,7 @@ main() {
   fi
 
   setup_plymouth_theme_target
+  setup_firewall_kdeconnect
   generate_mok_keys_target
   install_secureboot_components_target
   move_keyfile_to_systemd
