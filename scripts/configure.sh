@@ -300,9 +300,8 @@ setup_plymouth_theme_target() {
 
 # Function: setup_firewall_kdeconnect
 setup_firewall_kdeconnect() {
-  log_info "Configuring offline firewall for KDE Connect and GSConnect"
+  log_info "Configuring offline firewall for KDE Connect (compatible with GSConnect)"
   run_in_target "firewall-offline-cmd --zone=public --add-service=kdeconnect"
-  run_in_target "firewall-offline-cmd --zone=public --add-service=gsconnect"
   log_info "Offline firewall rules added. They will apply when firewalld is started."
 }
 
