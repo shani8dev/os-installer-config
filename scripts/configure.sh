@@ -300,10 +300,10 @@ setup_plymouth_theme_target() {
 
 # Function: setup_firewall_kdeconnect
 setup_firewall_kdeconnect() {
-  log_info "Configuring firewall for KDE Connect and GSConnect"
-  run_in_target "firewall-cmd --permanent --zone=public --add-service=kdeconnect"
-  run_in_target "firewall-cmd --permanent --zone=public --add-service=gsconnect"
-  log_info "Firewall rules added to permanent configuration. They will apply at boot."
+  log_info "Configuring offline firewall for KDE Connect and GSConnect"
+  run_in_target "firewall-offline-cmd --zone=public --add-service=kdeconnect"
+  run_in_target "firewall-offline-cmd --zone=public --add-service=gsconnect"
+  log_info "Offline firewall rules added. They will apply when firewalld is started."
 }
 
 # Function: generate_mok_keys_target
