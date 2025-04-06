@@ -256,7 +256,7 @@ setup_autologin_target() {
       run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
     elif run_in_target "command -v sddm >/dev/null"; then
       log_info "Configuring SDDM autologin for ${OSI_USER_NAME}"
-      run_in_target "mkdir -p /etc/sddm.conf.d && printf '[Autologin]\nUser=${OSI_USER_NAME}\n' > /etc/sddm.conf.d/autologin.conf"
+      run_in_target "mkdir -p /etc/sddm.conf.d && printf '[Autologin]\nUser=${OSI_USER_NAME}\nSession=plasma\n' > /etc/sddm.conf.d/autologin.conf"
     elif run_in_target "command -v greetd >/dev/null"; then
       log_info "Configuring greetd autologin for ${OSI_USER_NAME}"
       run_in_target "if [ -f /etc/greetd/config.toml ]; then \
