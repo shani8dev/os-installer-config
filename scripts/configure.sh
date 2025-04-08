@@ -537,10 +537,17 @@ setup_secureboot() {
         return 1
     fi
 
-    local sb_state
-    sb_state=$(efivar -n "$secureboot_var" -d 2>/dev/null | awk -F': ' '/Data:/ {print $2}' | tr -d ' ' | cut -c1-2)
+    local efivar_data sb_state
+    efivar_data=$(efivar -n "$secureboot_var" -d 2>/dev/null | awk -F': ' '/Data:/ {print $2}' | tr -d ' ') || true
+
+    if [[ -z "$efivar_data" ]]; then
+        log_warn "Failed to read Secure Boot state from efivar."
+        return 1
+    fi
+
+    sb_state="${efivar_data:0:2}"
     if [[ "$sb_state" != "01" ]]; then
-        log_info "Secure Boot not enabled (State: 0x${sb_state:-unknown})."
+        log_info "Secure Boot not enabled (State: 0x${sb_state})."
         return 0
     fi
 
@@ -548,7 +555,7 @@ setup_secureboot() {
     if [[ -n "${OSI_USER_PASSWORD:-}" && -f "$mok_key" ]]; then
         log_info "Attempting MOK key enrollment."
         if command -v mokutil >/dev/null; then
-            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | mokutil --import "$mok_key" >/dev/null; then
+            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | mokutil --import "$mok_key" >/dev/null 2>&1; then
                 log_warn "MOK enrollment failed."
                 exit_code=1
             else
@@ -563,7 +570,7 @@ setup_secureboot() {
     # Step 4: Configure Secure Boot bypass
     if ! mountpoint -q "$efivars"; then
         log_info "Mounting efivarfs."
-        if mount -t efivarfs efivarfs "$efivars"; then
+        if mount -t efivarfs efivarfs "$efivars" 2>/dev/null; then
             umount_needed=true
         else
             log_warn "Failed to mount efivarfs."
@@ -578,10 +585,17 @@ setup_secureboot() {
     fi
 
     # Step 5: Verification
-    local bypass_state
-    bypass_state=$(dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | od -An -t x1 | tr -d '[:space:]')
+    local bypass_state=""
+    if [[ -f "$efivars/$mok_var" ]]; then
+        local raw_byte
+        raw_byte=$(dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | od -An -t x1 | tr -d '[:space:]') || true
+        if [[ -n "$raw_byte" ]]; then
+            bypass_state="${raw_byte:0:2}"
+        fi
+    fi
+
     if [[ "$bypass_state" != "01" ]]; then
-        log_warn "Bypass verification failed."
+        log_warn "Bypass verification failed (State: ${bypass_state:-none})."
         exit_code=1
     else
         log_info "Secure Boot bypass confirmed."
@@ -589,7 +603,7 @@ setup_secureboot() {
 
     # Cleanup
     if $umount_needed; then
-        if ! umount "$efivars"; then
+        if ! umount "$efivars" 2>/dev/null; then
             log_warn "Failed to unmount efivarfs."
             exit_code=1
         fi
