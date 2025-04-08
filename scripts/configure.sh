@@ -526,73 +526,73 @@ setup_secureboot() {
     local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
 
     # Step 1: Verify UEFI environment
-    if [ ! -d "/sys/firmware/efi" ]; then
-        log_warn "Secure Boot setup: System is not UEFI"
+    if [[ ! -d "/sys/firmware/efi" ]]; then
+        log_warn "Secure Boot setup: System is not UEFI."
         return 0
     fi
 
     # Step 2: Check Secure Boot status
     if ! command -v efivar >/dev/null; then
-        log_warn "Secure Boot setup requires 'efivar' package"
+        log_warn "Secure Boot setup requires 'efivar' package."
         return 1
     fi
 
-    local sb_state=$(efivar -n "$secureboot_var" -d 2>/dev/null | \
-                    awk -F': ' '/Data:/ {print $2}' | tr -d ' ' | head -c2)
-    if [ "$sb_state" != "01" ]; then
-        log_info "Secure Boot not enabled (State: 0x${sb_state:-unknown})"
+    local sb_state
+    sb_state=$(efivar -n "$secureboot_var" -d 2>/dev/null | awk -F': ' '/Data:/ {print $2}' | tr -d ' ' | cut -c1-2)
+    if [[ "$sb_state" != "01" ]]; then
+        log_info "Secure Boot not enabled (State: 0x${sb_state:-unknown})."
         return 0
     fi
 
     # Step 3: MOK Enrollment
     if [[ -n "${OSI_USER_PASSWORD:-}" && -f "$mok_key" ]]; then
-        log_info "Attempting MOK key enrollment"
+        log_info "Attempting MOK key enrollment."
         if command -v mokutil >/dev/null; then
-            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | \
-                 mokutil --import "$mok_key" >/dev/null; then
-                log_warn "MOK enrollment failed"
+            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | mokutil --import "$mok_key" >/dev/null; then
+                log_warn "MOK enrollment failed."
                 exit_code=1
             else
-                log_info "MOK enrollment completed"
+                log_info "MOK enrollment completed."
             fi
         else
-            log_warn "Skipping MOK enrollment: mokutil not found"
+            log_warn "Skipping MOK enrollment: 'mokutil' not found."
             exit_code=1
         fi
     fi
 
     # Step 4: Configure Secure Boot bypass
-    if ! grep -q " $efivars " /proc/mounts; then
-        log_info "Mounting efivarfs"
+    if ! mountpoint -q "$efivars"; then
+        log_info "Mounting efivarfs."
         if mount -t efivarfs efivarfs "$efivars"; then
             umount_needed=true
         else
-            log_warn "Failed to mount efivarfs"
+            log_warn "Failed to mount efivarfs."
             return 1
         fi
     fi
 
-    log_info "Setting Secure Boot bypass"
-    if ! printf '\x01' | efivar -n "$mok_var" -w -t 7 -f - >/dev/null 2>&1; then
-        log_warn "Failed to write EFI variable"
+    log_info "Setting Secure Boot bypass."
+    if ! printf '\x01' | efivar --name="$mok_var" --write --type=7 --data=- >/dev/null 2>&1; then
+        log_warn "Failed to write EFI variable."
         exit_code=1
     fi
 
     # Step 5: Verification
-    if ! dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | \
-         grep -q $'\x01'; then
-        log_warn "Bypass verification failed"
+    local bypass_state
+    bypass_state=$(dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | od -An -t x1 | tr -d '[:space:]')
+    if [[ "$bypass_state" != "01" ]]; then
+        log_warn "Bypass verification failed."
         exit_code=1
     else
-        log_info "Secure Boot bypass confirmed"
+        log_info "Secure Boot bypass confirmed."
     fi
 
     # Cleanup
     if $umount_needed; then
-        umount "$efivars" || {
-            log_warn "Failed to unmount efivarfs"
+        if ! umount "$efivars"; then
+            log_warn "Failed to unmount efivarfs."
             exit_code=1
-        }
+        fi
     fi
 
     return $exit_code
