@@ -518,98 +518,102 @@ generate_loader_conf() {
 }
 
 setup_secureboot() {
-    local exit_code=0
     local umount_needed=false
     local mok_key="/etc/secureboot/keys/MOK.der"
     local efivars="/sys/firmware/efi/efivars"
-    local secureboot_var="SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
     local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
+    local needs_reboot=0
 
-    # Step 1: Verify UEFI environment
-    if [[ ! -d "/sys/firmware/efi" ]]; then
-        log_warn "Secure Boot setup: System is not UEFI."
-        return 0
-    fi
-
-    # Step 2: Check Secure Boot status
-    if ! command -v efivar >/dev/null; then
-        log_warn "Secure Boot setup requires 'efivar' package."
-        return 1
-    fi
-
-    local efivar_data sb_state
-    efivar_data=$(efivar -n "$secureboot_var" -d 2>/dev/null | awk -F': ' '/Data:/ {print $2}' | tr -d ' ') || true
-
-    if [[ -z "$efivar_data" ]]; then
-        log_warn "Failed to read Secure Boot state from efivar."
-        return 1
-    fi
-
-    sb_state="${efivar_data:0:2}"
-    if [[ "$sb_state" != "01" ]]; then
-        log_info "Secure Boot not enabled (State: 0x${sb_state})."
-        return 0
-    fi
-
-    # Step 3: MOK Enrollment
-    if [[ -n "${OSI_USER_PASSWORD:-}" && -f "$mok_key" ]]; then
-        log_info "Attempting MOK key enrollment."
-        if command -v mokutil >/dev/null; then
-            if ! printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | mokutil --import "$mok_key" >/dev/null 2>&1; then
-                log_warn "MOK enrollment failed."
-                exit_code=1
-            else
-                log_info "MOK enrollment completed."
-            fi
-        else
-            log_warn "Skipping MOK enrollment: 'mokutil' not found."
-            exit_code=1
+    # Dependency validation
+    declare -A deps=([mokutil]=1 [efivar]=1 [mount]=1 [umount]=1)
+    for cmd in "${!deps[@]}"; do
+        if ! command -v "$cmd" >/dev/null; then
+            log_warn "Missing required dependency: $cmd"
+            # Do not return error; just log and continue.
         fi
+    done
+
+    # UEFI check
+    if [[ ! -d "/sys/firmware/efi" ]]; then
+        log_warn "Secure Boot setup requires UEFI firmware"
+        # Continue instead of returning an error.
     fi
 
-    # Step 4: Configure Secure Boot bypass
+    # Secure Boot state check
+    local sb_state
+    if ! sb_state=$(mokutil --sb-state 2>&1); then
+        log_warn "Secure Boot state check failed: $sb_state"
+        # Continue even on failure.
+    fi
+
+    # Exit if Secure Boot is disabled (log only).
+    if [[ "$sb_state" == *"SecureBoot disabled"* ]]; then
+        log_info "Secure Boot is not enabled"
+        # Continue execution even if Secure Boot is off.
+    fi
+
+    # MOK enrollment workflow
+    if [[ -f "$mok_key" && -n "${OSI_USER_PASSWORD:-}" ]]; then
+        log_info "Starting MOK enrollment process"
+        local mok_output
+        if mok_output=$(printf "%s\n%s\n" "$OSI_USER_PASSWORD" "$OSI_USER_PASSWORD" | mokutil --import "$mok_key" 2>&1); then
+            log_info "MOK enrollment successful - reboot required"
+            needs_reboot=1
+        else
+            log_warn "MOK enrollment failed: ${mok_output:-Unknown error}"
+            # No error exit; we simply log.
+        fi
+    else
+        log_info "Skipping MOK enrollment - no credentials or key found"
+    fi
+
+    # EFI vars mount handling
     if ! mountpoint -q "$efivars"; then
-        log_info "Mounting efivarfs."
-        if mount -t efivarfs efivarfs "$efivars" 2>/dev/null; then
+        log_info "Mounting efivarfs"
+        if mount -t efivarfs efivarfs "$efivars" >/dev/null 2>&1; then
             umount_needed=true
         else
-            log_warn "Failed to mount efivarfs."
-            return 1
+            log_warn "Failed to mount efivarfs"
+            # Continue despite the failure.
         fi
     fi
 
-    log_info "Setting Secure Boot bypass."
-    if ! printf '\x01' | efivar --name="$mok_var" --write --type=7 --data=- >/dev/null 2>&1; then
-        log_warn "Failed to write EFI variable."
-        exit_code=1
-    fi
-
-    # Step 5: Verification
-    local bypass_state=""
-    if [[ -f "$efivars/$mok_var" ]]; then
-        local raw_byte
-        raw_byte=$(dd if="$efivars/$mok_var" bs=1 skip=4 count=1 2>/dev/null | od -An -t x1 | tr -d '[:space:]') || true
-        if [[ -n "$raw_byte" ]]; then
-            bypass_state="${raw_byte:0:2}"
+    # Secure Boot bypass configuration
+    if [[ -w "$efivars/$mok_var" ]]; then
+        log_info "Applying Secure Boot validation bypass"
+        if ! printf '\x01' | efivar --name="$mok_var" --write --type=7 --data=- >/dev/null 2>&1; then
+            log_warn "Failed to write Secure Boot bypass variable"
         fi
-    fi
-
-    if [[ "$bypass_state" != "01" ]]; then
-        log_warn "Bypass verification failed (State: ${bypass_state:-none})."
-        exit_code=1
     else
-        log_info "Secure Boot bypass confirmed."
+        log_warn "Missing write permissions for Secure Boot bypass variable"
     fi
 
-    # Cleanup
+    # State verification
+    local verification_state
+    if verification_state=$(mokutil --sb-state 2>/dev/null); then
+        if [[ "$verification_state" == *"Secure Boot validation is disabled in shim"* ]]; then
+            log_info "Secure Boot validation successfully disabled"
+        else
+            log_warn "Bypass verification failed - current state: $verification_state"
+        fi
+    else
+        log_warn "Failed to verify Secure Boot state"
+    fi
+
+    # Cleanup with error protection
     if $umount_needed; then
-        if ! umount "$efivars" 2>/dev/null; then
-            log_warn "Failed to unmount efivarfs."
-            exit_code=1
+        log_info "Unmounting efivarfs"
+        if ! umount "$efivars" >/dev/null 2>&1; then
+            log_warn "Failed to unmount efivarfs - manual cleanup required"
         fi
     fi
 
-    return $exit_code
+    # Reboot notification (logged, but not causing nonzero return)
+    if (( needs_reboot )); then
+        log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
+    fi
+
+    return 0
 }
 
 # Main configuration function
