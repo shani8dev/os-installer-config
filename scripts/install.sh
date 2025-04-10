@@ -45,8 +45,23 @@ log_info() { echo "[INSTALL][INFO] $*"; }
 log_warn() { echo "[INSTALL][WARN] $*" >&2; }
 log_error() { echo "[INSTALL][ERROR] $*" >&2; }
 
+# --- New Function: create_efi_boot_entry ---
+# Creates a UEFI boot entry using efibootmgr.
+create_efi_boot_entry() {
+  local efi_disk="$1"      # Disk containing the EFI System Partition (e.g., /dev/sda)
+  local efi_part="$2"      # Partition number of the EFI System Partition (e.g., 1)
+  local boot_label="$3"    # Label for the new boot entry (e.g., "shanios")
+  local efi_loader="$4"    # Path to the EFI loader relative to the EFI partition (e.g., '\EFI\shanios\grubx64.efi')
+
+  log_info "Creating UEFI boot entry for ${boot_label}"
+
+  sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" --label "${boot_label}" --loader "${efi_loader}" \
+    || { log_error "Failed to create UEFI boot entry"; exit 1; }
+}
+# --- End create_efi_boot_entry ---
+
 # Check for required commands.
-for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted; do
+for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted efibootmgr; do
   command -v "$cmd" &>/dev/null || { log_error "Required command '$cmd' not found."; exit 1; }
 done
 
@@ -56,7 +71,7 @@ check_env() {
   local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
   if [[ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]]; then
     if [[ -z "${OSI_DEVICE_EFI_PARTITION+x}" ]]; then
-      log_warn "OSI_DEVICE_EFI_PARTITION is not set. Will be assuming 1st partition as efi."
+      log_warn "OSI_DEVICE_EFI_PARTITION is not set. Will be assuming 1st partition as EFI."
     fi
   fi
   for var in "${required_vars[@]}"; do
@@ -288,6 +303,13 @@ do_setup() {
   extract_system_image
   extract_flatpak_image
   create_swapfile
+
+  # --- Create UEFI boot entry ---
+  # Derive the disk device by stripping the trailing digits from the EFI partition.
+  # This assumes the EFI partition is on partition "1".
+  efi_disk=$(echo "${EFI_PARTITION}" | sed 's/[0-9]*$//')
+  create_efi_boot_entry "${efi_disk}" "1" "${OS_NAME}" '\EFI\shanios\grubx64.efi'
+  # --- End boot entry creation ---
 
   log_info "Syncing data to disk..."
   sync
