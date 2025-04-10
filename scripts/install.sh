@@ -46,7 +46,7 @@ log_warn() { echo "[INSTALL][WARN] $*" >&2; }
 log_error() { echo "[INSTALL][ERROR] $*" >&2; }
 
 # Check for required commands.
-for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk; do
+for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted; do
   command -v "$cmd" &>/dev/null || { log_error "Required command '$cmd' not found."; exit 1; }
 done
 
@@ -110,6 +110,17 @@ else
   PARTITION_PREFIX=""
 fi
 
+# Function: normalize_partition
+# Ensures that if a partition is specified as a simple number it is prefixed with PARTITION_PREFIX.
+normalize_partition() {
+  local part="$1"
+  if [[ "$part" =~ ^[0-9]+$ ]] && [ -n "${PARTITION_PREFIX}" ]; then
+    echo "${PARTITION_PREFIX}${part}"
+  else
+    echo "$part"
+  fi
+}
+
 # Function: extract_image
 # Decompress an image with zstd and pipe it into btrfs receive.
 extract_image() {
@@ -123,8 +134,8 @@ extract_image() {
 log_info "Starting disk setup..."
 
 # Function: do_partitioning
-# If using a whole disk, partition it using PART_LAYOUT and derive EFI and root partitions.
-# If using a pre-partitioned device, assign EFI_PARTITION from OSI_DEVICE_EFI_PARTITION.
+# If using a whole disk, partition it using PART_LAYOUT, derive EFI and root partitions,
+# and set boot/esp flags; if using a pre-partitioned device, assign EFI_PARTITION from OSI_DEVICE_EFI_PARTITION.
 do_partitioning() {
   log_info "Setting ${OSI_DEVICE_PATH} to read-write mode."
   sudo blockdev --setrw "${OSI_DEVICE_PATH}" || log_warn "Could not force device to read-write mode; proceeding anyway."
@@ -133,18 +144,21 @@ do_partitioning() {
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
     sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
     # For whole disk, derive partitions: Partition 1 (EFI), Partition 2 (root).
-    EFI_PARTITION="${PARTITION_PREFIX}1"
-    ROOT_PARTITION="${PARTITION_PREFIX}2"
+    EFI_PARTITION=$(normalize_partition "1")
+    ROOT_PARTITION=$(normalize_partition "2")
+    # Set boot and esp flags on the EFI partition
+    log_info "Setting boot and esp flags on EFI partition"
+    sudo parted --script "${OSI_DEVICE_PATH}" set 1 boot on || log_warn "Could not set boot flag on partition 1"
+    sudo parted --script "${OSI_DEVICE_PATH}" set 1 esp on || log_warn "Could not set esp flag on partition 1"
   else
     log_info "Using pre-partitioned device."
-    EFI_PARTITION="${OSI_DEVICE_EFI_PARTITION:-${PARTITION_PREFIX}1}"
-    [[ "$EFI_PARTITION" =~ ^[0-9]+$ ]] && EFI_PARTITION="${PARTITION_PREFIX}${EFI_PARTITION}"
+    # Use provided EFI partition; normalize if it is a simple number.
+    EFI_PARTITION=$(normalize_partition "${OSI_DEVICE_EFI_PARTITION:-1}")
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
   log_info "EFI partition: ${EFI_PARTITION}"
   log_info "Root partition: ${ROOT_PARTITION}"
 }
-
 
 # Function: mount_boot_partition
 # Mount the EFI partition at /mnt/boot/efi. The function takes the EFI device as a parameter.
