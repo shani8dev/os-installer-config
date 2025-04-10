@@ -308,7 +308,7 @@ do_setup() {
   # Derive the disk device by stripping the trailing digits from the EFI partition.
   # This assumes the EFI partition is on partition "1".
   efi_disk=$(echo "${EFI_PARTITION}" | sed 's/[0-9]*$//')
-  create_efi_boot_entry "${efi_disk}" "1" "${OS_NAME}" '\EFI\shanios\grubx64.efi'
+  create_efi_boot_entry "${efi_disk}" "1" "${OS_NAME}" '\EFI\BOOT\BOOTX64.EFI'
   # --- End boot entry creation ---
 
   log_info "Syncing data to disk..."
