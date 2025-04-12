@@ -53,10 +53,31 @@ create_efi_boot_entry() {
   local boot_label="$3"    # Label for the new boot entry (e.g., "shanios")
   local efi_loader="$4"    # Path to the EFI loader relative to the EFI partition (e.g., '\EFI\shanios\grubx64.efi')
 
-  log_info "Creating UEFI boot entry for ${boot_label}"
+  log_info "Looking for an existing UEFI boot entry labeled '${boot_label}'..."
+  
+  # List current entries and search for an exact match of the boot label
+  existing_entry=$(sudo efibootmgr | grep -wF "${boot_label}" || true)
+  
+  if [ -n "$existing_entry" ]; then
+    # Extract the boot number using sed (matches a hexadecimal after 'Boot')
+    bootnum=$(echo "$existing_entry" | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*/\1/p')
+    if [ -n "$bootnum" ]; then
+      log_info "Existing entry Boot${bootnum} found. Deleting it..."
+      sudo efibootmgr --delete-bootnum --bootnum "${bootnum}" \
+        || { log_error "Failed to delete existing EFI boot entry Boot${bootnum}"; exit 1; }
+    else
+      log_info "Entry found, but unable to extract boot number. Proceeding to create new entry."
+    fi
+  else
+    log_info "No existing entry with label '${boot_label}' found."
+  fi
 
-  sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" --label "${boot_label}" --loader "${efi_loader}" \
-    || { log_error "Failed to create UEFI boot entry"; exit 1; }
+  log_info "Creating new UEFI boot entry with label '${boot_label}'"
+  sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" \
+    --label "${boot_label}" --loader "${efi_loader}" \
+    || { log_error "Failed to create EFI boot entry"; exit 1; }
+
+  log_info "EFI boot entry '${boot_label}' created successfully."
 }
 # --- End create_efi_boot_entry ---
 
