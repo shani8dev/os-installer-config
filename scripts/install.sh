@@ -328,7 +328,13 @@ do_setup() {
   # --- Create UEFI boot entry ---
   # Derive the disk device by stripping the trailing digits from the EFI partition.
   # This assumes the EFI partition is on partition "1".
-  efi_disk=$(echo "${EFI_PARTITION}" | sed 's/[0-9]*$//')
+  # Derive disk (handles both /dev/sda1 and /dev/nvme0n1p1)
+  local efi_disk
+  if [[ "${EFI_PARTITION}" =~ ^(/dev/.+)(p?[0-9]+)$ ]]; then
+    efi_disk="${BASH_REMATCH[1]}"
+  else
+    efi_disk="${EFI_PARTITION%[0-9]*}"
+  fi
   create_efi_boot_entry "${efi_disk}" "1" "${OS_NAME}" '\EFI\BOOT\BOOTX64.EFI'
   # --- End boot entry creation ---
 
