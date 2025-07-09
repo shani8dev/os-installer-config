@@ -188,42 +188,41 @@ setup_hostname_target() {
 
 # Function: setup_locale_target
 setup_locale_target() {
-  if [ -n "${OSI_LOCALE:-}" ]; then
+  if [ -n "${OSI_LOCALE:-}" ] && [ "${OSI_LOCALE,,}" != "none" ]; then
     log_info "Configuring locale to ${OSI_LOCALE}"
     run_in_target "echo \"LANG=${OSI_LOCALE}\" > /etc/locale.conf && localectl set-locale LANG='${OSI_LOCALE}'"
   else
-    log_info "Locale variable not provided, skipping locale configuration."
+    log_info "Locale variable not provided or set to 'none', skipping locale configuration."
   fi
 }
 
 # Function: setup_keyboard_target
 setup_keyboard_target() {
-  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ]; then
+  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ] && [ "${OSI_KEYBOARD_LAYOUT,,}" != "none" ]; then
     log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
     run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
   else
-    log_info "Keyboard layout variable not provided, skipping keyboard configuration."
+    log_info "Keyboard layout variable not provided or set to 'none', skipping keyboard configuration."
   fi
 }
 
 # Function: setup_formats_target
 setup_formats_target() {
-  if [ -n "${OSI_FORMATS:-}" ]; then
+  if [ -n "${OSI_FORMATS:-}" ] && [ "${OSI_FORMATS,,}" != "none" ]; then
     log_info "Configuring formats: ${OSI_FORMATS}"
-    # OSI_FORMATS should contain one or more key=value pairs separated by spaces.
     run_in_target "localectl set-locale ${OSI_FORMATS}"
   else
-    log_info "Formats variable not provided, skipping formats configuration."
+    log_info "Formats variable not provided or set to 'none', skipping formats configuration."
   fi
 }
 
 # Function: setup_timezone_target
 setup_timezone_target() {
-  if [ -n "${OSI_TIMEZONE:-}" ]; then
+  if [ -n "${OSI_TIMEZONE:-}" ] && [ "${OSI_TIMEZONE,,}" != "none" ]; then
     log_info "Setting timezone to ${OSI_TIMEZONE}"
     run_in_target "ln -sf \"/usr/share/zoneinfo/${OSI_TIMEZONE}\" /etc/localtime && echo '${OSI_TIMEZONE}' > /etc/timezone && timedatectl set-timezone '${OSI_TIMEZONE}'"
   else
-    log_info "Timezone variable not provided, skipping timezone configuration."
+    log_info "Timezone variable not provided or set to 'none', skipping timezone configuration."
   fi
 }
 
@@ -524,60 +523,63 @@ setup_secureboot() {
     local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
     local needs_reboot=0
 
-    # UEFI check on host
+    # Check for UEFI system
     if [[ ! -d "/sys/firmware/efi" ]]; then
-        log_warn "Secure Boot setup requires UEFI firmware"
+        log_warn "Secure Boot setup skipped: System is not using UEFI firmware."
         return 0
     fi
 
-    # === Chroot-Requiring Operations ===
-
-    # 1. MOK Enrollment workflow (only if key exists and OSI_USER_PASSWORD is set)
+    # Step 1: MOK Enrollment
     if [[ -f "$mok_key" && -n "${OSI_USER_PASSWORD:-}" ]]; then
         log_info "Starting MOK enrollment process"
         local enroll_cmd="printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import '$mok_key'"
-        local mok_output
-        mok_output=$(run_in_target "$enroll_cmd" 2>&1)
+        local mok_output=""
+        mok_output=$(run_in_target "$enroll_cmd" 2>&1) || {
+            log_warn "MOK enrollment failed: ${mok_output:-Unknown error}"
+        }
         if [[ $? -eq 0 ]]; then
             log_info "MOK enrollment successful - reboot required"
             needs_reboot=1
-        else
-            log_warn "MOK enrollment failed: ${mok_output:-Unknown error}"
         fi
     else
-        log_info "Skipping MOK enrollment - no credentials or key found"
+        log_info "Skipping MOK enrollment - missing key or password."
     fi
 
-    # 2. Mount efivarfs in chroot if not already mounted.
-    if ! mountpoint -q "$efivars"; then
-        log_info "Mounting efivarfs inside chroot"
-        run_in_target "mount -t efivarfs efivarfs '$efivars'" >/dev/null 2>&1 && umount_needed=true || log_warn "Failed to mount efivarfs in target"
-    fi
-
-    # 3. Secure Boot bypass configuration: write the bypass variable if writable.
-    if run_in_target "test -w '$efivars/$mok_var'" >/dev/null 2>&1; then
-        log_info "Applying Secure Boot validation bypass in chroot"
-        run_in_target "printf '\x01' | efivar --name='$mok_var' --write --type=7 --data=-" >/dev/null 2>&1 || log_warn "Failed to write Secure Boot bypass variable in chroot"
+    # Step 2: Mount efivarfs
+    if ! run_in_target "mountpoint -q '$efivars'" >/dev/null 2>&1; then
+        log_info "Mounting efivarfs in chroot..."
+        run_in_target "mkdir -p '$efivars'" >/dev/null 2>&1 || log_warn "Failed to create efivars directory"
+        run_in_target "mount -t efivarfs efivarfs '$efivars'" >/dev/null 2>&1 && umount_needed=true || {
+            log_warn "Failed to mount efivarfs in chroot"
+        }
     else
-        log_warn "Missing write permissions for Secure Boot bypass variable in target"
+        log_info "efivarfs already mounted in chroot"
     fi
 
-    # 4. Verify Secure Boot state entirely within the chroot.
-    local verification_state
-    verification_state=$(run_in_target "mokutil --sb-state 2>&1")
+    # Step 3: Attempt Secure Boot variable bypass
+    run_in_target "test -w '$efivars/$mok_var'" >/dev/null 2>&1 && {
+        log_info "Applying Secure Boot validation bypass"
+        run_in_target "printf '\x01' | efivar --name='$mok_var' --write --type=7 --data=-" >/dev/null 2>&1 || {
+            log_warn "Failed to write Secure Boot bypass variable"
+        }
+    } || log_warn "Bypass variable is not writable in chroot (may be already disabled)"
+
+    # Step 4: Verify secure boot status
+    local verification_state=""
+    verification_state=$(run_in_target "mokutil --sb-state" 2>&1) || true
     if [[ "$verification_state" == *"Secure Boot validation is disabled in shim"* ]]; then
         log_info "Secure Boot validation successfully disabled"
     else
-        log_warn "Bypass verification failed - current state: $verification_state"
+        log_warn "Secure Boot state: ${verification_state}"
     fi
 
-    # 5. Cleanup: Unmount efivarfs if it was mounted in chroot.
+    # Step 5: Cleanup efivarfs
     if $umount_needed; then
-        log_info "Unmounting efivarfs in chroot"
-        run_in_target "umount '$efivars'" >/dev/null 2>&1 || log_warn "Failed to unmount efivarfs - manual cleanup required"
+        log_info "Unmounting efivarfs from chroot"
+        run_in_target "umount '$efivars'" >/dev/null 2>&1 || log_warn "Manual cleanup required: could not unmount efivarfs"
     fi
 
-    # 6. Final reboot notification if needed.
+    # Step 6: Reboot notice
     if (( needs_reboot )); then
         log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
     fi
