@@ -45,26 +45,74 @@ log_info() { echo "[INSTALL][INFO] $*"; }
 log_warn() { echo "[INSTALL][WARN] $*" >&2; }
 log_error() { echo "[INSTALL][ERROR] $*" >&2; }
 
-# --- New Function: create_efi_boot_entry ---
-# Creates a UEFI boot entry using efibootmgr.
+# --- Improved Function: get_efi_disk_info ---
+# Better logic to derive disk and partition number from EFI partition path
+get_efi_disk_info() {
+  local efi_partition="$1"
+  local efi_disk=""
+  local efi_part_num=""
+  
+  # Handle different partition naming schemes
+  if [[ "${efi_partition}" =~ ^(/dev/nvme[0-9]+n[0-9]+)p([0-9]+)$ ]]; then
+    # NVMe: /dev/nvme0n1p1 -> disk=/dev/nvme0n1, part=1
+    efi_disk="${BASH_REMATCH[1]}"
+    efi_part_num="${BASH_REMATCH[2]}"
+  elif [[ "${efi_partition}" =~ ^(/dev/mmcblk[0-9]+)p([0-9]+)$ ]]; then
+    # MMC/eMMC: /dev/mmcblk0p1 -> disk=/dev/mmcblk0, part=1
+    efi_disk="${BASH_REMATCH[1]}"
+    efi_part_num="${BASH_REMATCH[2]}"
+  elif [[ "${efi_partition}" =~ ^(/dev/[a-z]+)([0-9]+)$ ]]; then
+    # SATA/IDE: /dev/sda1 -> disk=/dev/sda, part=1
+    efi_disk="${BASH_REMATCH[1]}"
+    efi_part_num="${BASH_REMATCH[2]}"
+  else
+    log_warn "Unable to parse EFI partition path: ${efi_partition}"
+    return 1
+  fi
+  
+  log_info "Derived EFI disk: ${efi_disk}, partition: ${efi_part_num}"
+  echo "${efi_disk}" "${efi_part_num}"
+}
+
+# --- Improved Function: create_efi_boot_entry ---
+# Creates a UEFI boot entry using efibootmgr with better error handling.
 create_efi_boot_entry() {
   local efi_disk="$1"      # Disk containing the EFI System Partition (e.g., /dev/sda)
   local efi_part="$2"      # Partition number of the EFI System Partition (e.g., 1)
   local boot_label="$3"    # Label for the new boot entry (e.g., "shanios")
   local efi_loader="$4"    # Path to the EFI loader relative to the EFI partition (e.g., '\EFI\shanios\grubx64.efi')
 
+  log_info "Attempting to create EFI boot entry..."
+  
+  # Check if we're in a UEFI environment
+  if [ ! -d "/sys/firmware/efi" ]; then
+    log_warn "Not running in UEFI mode - skipping EFI boot entry creation"
+    return 0
+  fi
+  
+  # Check if efibootmgr is available and working
+  if ! sudo efibootmgr >/dev/null 2>&1; then
+    log_warn "efibootmgr not working (possibly no EFI variables access) - skipping EFI boot entry creation"
+    return 0
+  fi
+
   log_info "Looking for an existing UEFI boot entry labeled '${boot_label}'..."
   
   # List current entries and search for an exact match of the boot label
-  existing_entry=$(sudo efibootmgr | grep -wF "${boot_label}" || true)
+  local existing_entry
+  existing_entry=$(sudo efibootmgr 2>/dev/null | grep -wF "${boot_label}" || true)
   
   if [ -n "$existing_entry" ]; then
     # Extract the boot number using sed (matches a hexadecimal after 'Boot')
+    local bootnum
     bootnum=$(echo "$existing_entry" | sed -n 's/^Boot\([0-9A-Fa-f]\+\).*/\1/p')
     if [ -n "$bootnum" ]; then
-      log_info "Existing entry Boot${bootnum} found. Deleting it..."
-      sudo efibootmgr --delete-bootnum --bootnum "${bootnum}" \
-        || { log_error "Failed to delete existing EFI boot entry Boot${bootnum}"; exit 1; }
+      log_info "Existing entry Boot${bootnum} found. Attempting to delete it..."
+      if sudo efibootmgr --delete-bootnum --bootnum "${bootnum}" 2>/dev/null; then
+        log_info "Successfully deleted existing entry Boot${bootnum}"
+      else
+        log_warn "Failed to delete existing EFI boot entry Boot${bootnum} - continuing anyway"
+      fi
     else
       log_info "Entry found, but unable to extract boot number. Proceeding to create new entry."
     fi
@@ -73,18 +121,29 @@ create_efi_boot_entry() {
   fi
 
   log_info "Creating new UEFI boot entry with label '${boot_label}'"
-  sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" \
-    --label "${boot_label}" --loader "${efi_loader}" \
-    || { log_error "Failed to create EFI boot entry"; exit 1; }
-
-  log_info "EFI boot entry '${boot_label}' created successfully."
+  log_info "  Disk: ${efi_disk}"
+  log_info "  Partition: ${efi_part}"
+  log_info "  Loader: ${efi_loader}"
+  
+  if sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" \
+    --label "${boot_label}" --loader "${efi_loader}" 2>/dev/null; then
+    log_info "EFI boot entry '${boot_label}' created successfully."
+  else
+    log_warn "Failed to create EFI boot entry - this may not be critical for system functionality"
+    log_warn "You can manually create the boot entry later using:"
+    log_warn "  sudo efibootmgr --create --disk '${efi_disk}' --part '${efi_part}' --label '${boot_label}' --loader '${efi_loader}'"
+  fi
 }
-# --- End create_efi_boot_entry ---
 
 # Check for required commands.
-for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted efibootmgr; do
+for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted; do
   command -v "$cmd" &>/dev/null || { log_error "Required command '$cmd' not found."; exit 1; }
 done
+
+# efibootmgr is optional - only warn if not available
+if ! command -v efibootmgr &>/dev/null; then
+  log_warn "efibootmgr not found - EFI boot entry creation will be skipped"
+fi
 
 # Environment check: OSI_DEVICE_EFI_PARTITION is required only when OSI_DEVICE_IS_PARTITION is 1.
 check_env() {
@@ -325,17 +384,21 @@ do_setup() {
   extract_flatpak_image
   create_swapfile
 
-  # --- Create UEFI boot entry ---
-  # Derive the disk device by stripping the trailing digits from the EFI partition.
-  # This assumes the EFI partition is on partition "1".
-  # Derive disk (handles both /dev/sda1 and /dev/nvme0n1p1)
-  local efi_disk
-  if [[ "${EFI_PARTITION}" =~ ^(/dev/.+)(p?[0-9]+)$ ]]; then
-    efi_disk="${BASH_REMATCH[1]}"
+  # --- Create UEFI boot entry with improved error handling ---
+  log_info "Setting up UEFI boot entry..."
+  
+  # Get disk and partition info
+  local efi_info
+  if efi_info=$(get_efi_disk_info "${EFI_PARTITION}"); then
+    local efi_disk efi_part_num
+    read -r efi_disk efi_part_num <<< "${efi_info}"
+    
+    # Create the boot entry (won't fail the script if it doesn't work)
+    create_efi_boot_entry "${efi_disk}" "${efi_part_num}" "${OS_NAME}" '\EFI\BOOT\BOOTX64.EFI'
   else
-    efi_disk="${EFI_PARTITION%[0-9]*}"
+    log_warn "Could not derive EFI disk information - skipping boot entry creation"
+    log_warn "You may need to manually create a boot entry later"
   fi
-  create_efi_boot_entry "${efi_disk}" "1" "${OS_NAME}" '\EFI\BOOT\BOOTX64.EFI'
   # --- End boot entry creation ---
 
   log_info "Syncing data to disk..."
@@ -346,4 +409,3 @@ do_setup() {
 }
 
 do_setup
-
