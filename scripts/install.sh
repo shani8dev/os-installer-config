@@ -369,6 +369,14 @@ extract_flatpak_image() {
 # Function: create_swapfile
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
+  local available_mb=$(df -BM /mnt | awk 'NR==2 {print $4}' | sed 's/M//')
+  
+  if (( available_mb < SWAPFILE_SIZE )); then
+    log_warn "Insufficient space for swapfile. Available: ${available_mb}MB, Required: ${SWAPFILE_SIZE}MB"
+    log_info "Skipping swapfile creation. System will use zram for swap."
+    return 0
+  fi
+  
   log_info "Creating swapfile at /mnt/@swap/swapfile"
   sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/@swap/swapfile" || { log_error "Swapfile creation failed"; exit 1; }
   sudo swapon "/mnt/@swap/swapfile" || { log_error "Swapfile activation failed"; exit 1; }
