@@ -23,7 +23,7 @@ CONFIG_FILE="/etc/os-installer/config.yaml"
 if [[ -f "${CONFIG_FILE}" ]]; then
   # Assumes a simple YAML with lines like "skip_user: yes"
   SKIP_USER=$(grep -E '^skip_user:' "${CONFIG_FILE}" | awk '{print $2}')
-  SKIP_LOCALE=$(grep -E '^skip_locale:' "${CONFIG_FILE}" | awk '{print $2}')
+  SKIP_REGION=$(grep -E '^skip_region:' "${CONFIG_FILE}" | awk '{print $2}')
 
   if [[ "${SKIP_USER}" == "yes" ]]; then
     export OSI_USER_NAME=""
@@ -31,7 +31,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     export OSI_USER_AUTOLOGIN=""
   fi
 
-  if [[ "${SKIP_LOCALE}" == "yes" ]]; then
+  if [[ "${SKIP_REGION}" == "yes" ]]; then
     export OSI_LOCALE=""
     export OSI_FORMATS=""
     export OSI_TIMEZONE=""
@@ -596,8 +596,8 @@ main() {
   setup_hostname_target
   setup_machine_id_target
   
-  # If SKIP_LOCALE is set to "yes", skip locale, keyboard, and timezone configuration.
-  if [[ "${SKIP_LOCALE:-}" == "yes" ]]; then
+  # If SKIP_REGION is set to "yes", skip locale, keyboard, and timezone configuration.
+  if [[ "${SKIP_REGION:-}" == "yes" ]]; then
     log_info "Skipping locale, keyboard, and timezone configuration as per config."
   else
     setup_locale_target

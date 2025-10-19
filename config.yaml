@@ -1,11 +1,19 @@
 %YAML 1.2
 ---
-
+# Name of the distribution.
+# Default: 'Untitled'
 distribution_name: 'Shani OS'
+# Configure whether an internet connection is required. Optionally set what
+# URL/IP address is used to check for an existing internet connection.
+#
+# Default: connection_required: yes, checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+internet:
+  connection_required: yes
+  checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
 
-internet_connection_required: no
-
-internet_checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
+# Skip the language selection dialog by specifing a language, e.g. 'pt_BR'
+# Default: no (No fixed language, not Norwegian)
+fixed_language: no
 
 fixed_language: en
 
@@ -23,22 +31,32 @@ welcome_page:
 
       Let's begin!
     usage: yes
-# Minimum disk size needed for the installation (in Gigabyte)
-# Default: 5
-minimum_disk_size: 28  # Accounts for actual usable space on 32GB cards
+# Disk requirements for installation
+#
+# partition_ok  Whether partitions are accepted as installation targets
+#                (Otherwise only complete disks can be used)
+# min_size       Minimum size needed for installation (in Gigabyte)
+#
+# Default: partition_ok: no, min_size: 5
+disk:
+  partition_ok: no
+  min_size: 28  # Accounts for actual usable space on 32GB cards
 
 # Disk encryption PIN setup.
 #
 # offered      Whether to offer disk encryption pin setup.
-# forced       Whether to requrie a disk encryption pin.
+# forced       To make disk encryption non-optional.
+# generated    To skip encryption pin entry.
 # min_length   Minimal encryption pin length.
 # confirmation Require pin to be entered a second time.
 #
-# Default: offered: yes, forced: no, min_length: 1, confirmation: no
+# Default: offered: yes, forced: no, generated: no,
+#          min_length: 1, confirmation: no
 disk_encryption:
   offered: yes
   forced: no
-  min_length: 0
+  generated: no
+  min_length: 1
   confirmation: yes
 
 # User setup requests a printable name and a password by default.
@@ -51,21 +69,32 @@ disk_encryption:
 # Default: request_username: no, provide_autologin: no, min_password_length: 1, password_confirmation: no
 user:
   request_username: no
-  provide_autologin: True
+  provide_autologin: yes
   min_password_length: 1
   password_confirmation: yes
 
-
-# gnome-initial-setup can handle user and locale setup.
+# gnome-initial-setup can handle user and region setup.
 # These settings allow to disable these pages.
 #
-# Default: skip_user: no, skip_locale: no
-
+# Default: skip_region: no, skip_user: no
+skip_region: yes
 skip_user: yes
-skip_locale: yes
 
-failure_help_url: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
+# Upon failure an option to search for help on the internet is given.
+# The url this leads to can be defined here. The squiggly brackets are
+# replaced with the os-installer version.
+#
+# Default: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
+failure_help_url: 'https://support.dist.ro/new_issue?q="failed"+"os-installer {}"'
 
-browser_cmd: 'firefox'
-disks_cmd: 'gnome-disks'
-wifi_cmd: 'gnome-control-center wifi'
+# Certain parts of the installer launch external programs. These can be configured here.
+# Note: For calling the command, the string is split up by spaces.
+#
+# The browser_cmd will be called followed by a url.
+#
+# Default: browser: 'epiphany', disks: 'gnome-disks', reboot: 'reboot', wifi: 'gnome-control-center wifi'
+commands:
+  browser: 'firefox'
+  disks  : 'gnome-disks'
+  reboot : 'shutdown -r now'
+  wifi   : 'gnome-control-center wifi'
