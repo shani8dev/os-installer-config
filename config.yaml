@@ -6,9 +6,9 @@ distribution_name: 'Shani OS'
 
 # Default: None
 scripts:
-  prepare: /etc/os-installer/scripts/prepare.sh
-  install: /etc/os-installer/scripts/install.sh
-  configure: /etc/os-installer/scripts/configure.sh
+  prepare: scripts/prepare.sh
+  install: scripts/install.sh
+  configure: scripts/configure.sh
 
 # Configure whether an internet connection is required. Optionally set what
 # URL/IP address is used to check for an existing internet connection.
@@ -20,7 +20,7 @@ internet:
 
 # Skip the language selection dialog by specifing a language, e.g. 'pt_BR'
 # Default: no (No fixed language, not Norwegian)
-fixed_language: en
+fixed_language: en_US
 
 welcome_page:
     logo: '/usr/share/pixmaps/shanios-logo.png'
