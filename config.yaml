@@ -57,7 +57,7 @@ disk:
 disk_encryption:
   offered: yes
   forced: no
-  generated: yes
+  generated: no
   min_length: 1
   confirmation: yes
 

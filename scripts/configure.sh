@@ -304,6 +304,20 @@ setup_firewall_kdeconnect() {
   log_info "Offline firewall rules added. They will apply when firewalld is started."
 }
 
+# Function: enable_plasma_setup_service
+enable_plasma_setup_service() {
+  log_info "Checking for KDE Plasma environment..."
+
+  # Detect if KDE Plasma is installed or active
+  if run_in_target "command -v plasmashell >/dev/null 2>&1 || [[ -d /usr/share/plasma || -d /etc/xdg/plasma-workspace ]]"; then
+    log_info "KDE Plasma detected. Enabling plasma-setup service..."
+    run_in_target "systemctl enable plasma-setup.service || true"
+    log_info "plasma-setup service enabled successfully."
+  else
+    log_info "KDE Plasma not detected. Skipping plasma-setup service enable."
+  fi
+}
+
 # Function: generate_mok_keys_target
 generate_mok_keys_target() {
   log_info "Generating MOK keys for secure boot"
@@ -617,6 +631,7 @@ main() {
 
   setup_plymouth_theme_target
   setup_firewall_kdeconnect
+  enable_plasma_setup_service
   generate_mok_keys_target
   install_secureboot_components_target
   move_keyfile_to_systemd
