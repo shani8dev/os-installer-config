@@ -307,12 +307,19 @@ setup_firewall_kdeconnect() {
 # Function: enable_plasma_setup_service
 enable_plasma_setup_service() {
   log_info "Checking for KDE Plasma environment..."
-
   # Detect if KDE Plasma is installed or active
   if run_in_target "command -v plasmashell >/dev/null 2>&1 || [[ -d /usr/share/plasma || -d /etc/xdg/plasma-workspace ]]"; then
     log_info "KDE Plasma detected. Enabling plasma-setup service..."
     run_in_target "systemctl enable plasma-setup.service || true"
-    log_info "plasma-setup service enabled successfully."
+    
+    log_info "Creating display-manager override for plasma-setup ordering..."
+    run_in_target "mkdir -p /etc/systemd/system/display-manager.service.d"
+    run_in_target "cat > /etc/systemd/system/display-manager.service.d/10-plasma-setup.conf << 'EOF'
+[Unit]
+After=plasma-setup.service
+EOF"
+    
+    log_info "plasma-setup service enabled and display-manager override created successfully."
   else
     log_info "KDE Plasma not detected. Skipping plasma-setup service enable."
   fi
