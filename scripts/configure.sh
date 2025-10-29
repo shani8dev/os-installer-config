@@ -110,6 +110,8 @@ mount_additional_subvols() {
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@libvirt"]="/var/lib/libvirt|rw,noatime,nodatacow,nospace_cache"
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
   )
 
@@ -125,7 +127,7 @@ mount_additional_subvols() {
 }
 
 # Function: mount_overlay
-# Configure an overlay mount for /etc.
+# Configure an overlay mount for /etc and /var, then setup bind mounts for persistent service state.
 mount_overlay() {
   log_info "Configuring overlay for /etc and /var"
 
@@ -161,6 +163,59 @@ mount_overlay() {
   log_info "Mounting overlay on /var"
   sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
 
+  #############################
+  # Setup bind mounts for persistent service state
+  #############################
+  log_info "Setting up bind mounts for persistent service state"
+  
+  # Service directories should already exist from install.sh
+  local service_dirs=(
+    # Core System Services (Required)
+    "dbus"
+    "systemd"
+    # Network & Connectivity
+    "NetworkManager"
+    "bluetooth"
+    # Authentication & User Management
+    "fprint"
+    "AccountsService"
+    "boltd"
+    # Display Managers
+    "gdm"
+    "sddm"
+    # Hardware & Peripherals
+    "colord"
+    "upower"
+    "cups"
+    "sane"
+    "firewalld"
+    "geoclue"
+    # Network Services
+    "samba"
+    "nfs"
+  )
+  
+  for service in "${service_dirs[@]}"; do
+    local source="${TARGET}/data/varlib/${service}"
+    local target="${TARGET}/var/lib/${service}"
+    
+    # Only proceed if source exists (created by install.sh)
+    if [[ ! -d "${source}" ]]; then
+      log_info "Skipping ${service}: source directory not found (created by install.sh but may be optional)"
+      continue
+    fi
+    
+    # Check if target exists in the root filesystem
+    # Some services may not be installed (e.g., sddm in GNOME, gdm in KDE)
+    if [[ ! -d "${target}" ]]; then
+      log_info "Skipping ${service}: not present in root filesystem (service not installed)"
+      continue
+    fi
+    
+    # Both source and target exist, create bind mount
+    log_info "Bind mounting ${service}"
+    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount ${service}"
+  done
 }
 
 # Function: run_in_target

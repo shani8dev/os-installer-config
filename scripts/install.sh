@@ -306,7 +306,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@swap" )
+  local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@machines" "@libvirt" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -316,16 +316,66 @@ create_subvolumes() {
     fi
   done
 
-  local data_dirs=( "overlay/etc/lower" "overlay/etc/upper" "overlay/etc/work" "overlay/var/lower" "overlay/var/upper" "overlay/var/work" "downloads" )
-  for dir in "${data_dirs[@]}"; do
+  # Create overlay directories
+  local overlay_dirs=( 
+    "overlay/etc/lower" 
+    "overlay/etc/upper" 
+    "overlay/etc/work" 
+    "overlay/var/lower" 
+    "overlay/var/upper" 
+    "overlay/var/work"
+  )
+  for dir in "${overlay_dirs[@]}"; do
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then
-      log_info "Creating directory ${full_dir}"
+      log_info "Creating overlay directory ${full_dir}"
       sudo mkdir -p "${full_dir}" || { log_error "Failed to create directory ${full_dir}"; exit 1; }
     else
-      log_info "Directory ${full_dir} already exists"
+      log_info "Overlay directory ${full_dir} already exists"
     fi
   done
+
+  # Create persistent service state directories in @data/varlib
+  log_info "Creating persistent service state directories"
+  local varlib_dirs=(
+    # Core System Services (Required)
+    "varlib/dbus"
+    "varlib/systemd"
+    # Network & Connectivity
+    "varlib/NetworkManager"
+    "varlib/bluetooth"
+    # Authentication & User Management
+    "varlib/fprint"
+    "varlib/AccountsService"
+    "varlib/boltd"
+    # Display Managers
+    "varlib/gdm"
+    "varlib/sddm"
+    # Hardware & Peripherals
+    "varlib/colord"
+    "varlib/upower"
+    "varlib/cups"
+    "varlib/sane"
+    "varlib/firewalld"
+    "varlib/geoclue"
+    # Network Services
+    "varlib/samba"
+    "varlib/nfs"
+    # User data directory
+    "downloads"
+  )
+  
+  for dir in "${varlib_dirs[@]}"; do
+    local full_dir="/mnt/@data/${dir}"
+    if [ ! -d "${full_dir}" ]; then
+      log_info "Creating service directory ${full_dir}"
+      sudo mkdir -p "${full_dir}" || { log_error "Failed to create directory ${full_dir}"; exit 1; }
+    else
+      log_info "Service directory ${full_dir} already exists"
+    fi
+  done
+  
+  log_info "All required directories created successfully"
 }
 
 # Function: extract_system_image
