@@ -122,7 +122,7 @@ mount_additional_subvols() {
     log_info "Mounting subvolume ${subvol} to ${TARGET}${target} with options: ${options}"
     sudo mkdir -p "${TARGET}${target}" 2>/dev/null || true
     sudo mount -t btrfs -o "subvol=${subvol},${options}" "$device" "${TARGET}${target}" \
-      || die "Failed to mount subvolume ${subvol} to ${TARGET}${target}"
+      || log_warn "Failed to mount subvolume ${subvol} to ${TARGET}${target}"
   done
 }
 
