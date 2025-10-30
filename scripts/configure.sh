@@ -120,7 +120,7 @@ mount_additional_subvols() {
     # Split the array value into target path and mount options using the '|' delimiter.
     IFS='|' read -r target options <<< "${subvols[$subvol]}"
     log_info "Mounting subvolume ${subvol} to ${TARGET}${target} with options: ${options}"
-    sudo mkdir -p "${TARGET}${target}"
+    sudo mkdir -p "${TARGET}${target}" 2>/dev/null || true
     sudo mount -t btrfs -o "subvol=${subvol},${options}" "$device" "${TARGET}${target}" \
       || die "Failed to mount subvolume ${subvol} to ${TARGET}${target}"
   done
