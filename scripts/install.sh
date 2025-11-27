@@ -179,6 +179,7 @@ BTRFS_TOP_OPTS="defaults,noatime,compress=zstd,space_cache=v2,autodefrag"
 # Source image paths (Btrfs send streams)
 ROOTFSZST_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/rootfs.zst"
 FLATPAKFS_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/flatpakfs.zst"
+SNAPFS_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/snapfs.zst"
 
 SWAPFILE_PATH="@swap/swapfile"  # Under the @swap subvolume
 SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
@@ -306,7 +307,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@machines" "@libvirt" "@swap" )
+  local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -416,6 +417,23 @@ extract_flatpak_image() {
   sudo btrfs subvolume delete "/mnt/flatpak_subvol" || log_warn "Could not delete flatpak_subvol; please remove manually later"
 }
 
+# Function: extract_snap_image
+# Decompress and load the Snap image, then create a snapshot.
+extract_snap_image() {
+  log_info "Extracting Snap image into /mnt"
+  extract_image "${SNAPFS_SOURCE}" "/mnt"
+  if sudo btrfs subvolume show "/mnt/snap_subvol" &>/dev/null; then
+    log_info "Subvolume 'snap_subvol' detected"
+  else
+    log_error "Subvolume 'snap_subvol' not found after extraction"
+    exit 1
+  fi
+  log_info "Creating snapshot @snap from snap_subvol"
+  sudo btrfs subvolume snapshot "/mnt/snap_subvol" "/mnt/@snap" || { log_error "Snapshot creation for @snap failed"; exit 1; }
+  log_info "Deleting original subvolume snap_subvol"
+  sudo btrfs subvolume delete "/mnt/snap_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
+}
+
 # Function: create_swapfile
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
@@ -440,6 +458,7 @@ do_setup() {
   create_subvolumes
   extract_system_image
   extract_flatpak_image
+  extract_snap_image
   create_swapfile
 
   # --- Create UEFI boot entry with improved error handling ---

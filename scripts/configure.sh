@@ -109,8 +109,10 @@ mount_additional_subvols() {
     ["@cache"]="/var/cache|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@snapd"]="/var/lib/snapd|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@lxc"]="/var/lib/lxc|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@libvirt"]="/var/lib/libvirt|rw,noatime,nodatacow,nospace_cache"
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
   )
@@ -357,6 +359,23 @@ setup_firewall_kdeconnect() {
   log_info "Configuring offline firewall for KDE Connect (compatible with GSConnect)"
   run_in_target "firewall-offline-cmd --zone=public --add-service=kdeconnect"
   log_info "Offline firewall rules added. They will apply when firewalld is started."
+}
+
+# Function: setup_firewall_waydroid
+setup_firewall_waydroid() {
+  log_info "Configuring offline firewall rules for Waydroid networking"
+
+  # DNS ports required by Waydroid’s internal network
+  run_in_target "firewall-offline-cmd --zone=trusted --add-port=53/udp"
+  run_in_target "firewall-offline-cmd --zone=trusted --add-port=67/udp"
+
+  # Allow packet forwarding in the trusted zone
+  run_in_target "firewall-offline-cmd --zone=trusted --add-forward"
+
+  # Add Waydroid virtual interface to the trusted zone
+  run_in_target "firewall-offline-cmd --zone=trusted --add-interface=waydroid0"
+
+  log_info 'Offline Waydroid firewall rules added (DNS, forwarding, interface "waydroid0").'
 }
 
 # Function: enable_plasma_setup_service
@@ -618,10 +637,10 @@ setup_secureboot() {
         return 0
     fi
 
-    # Step 1: MOK Enrollment
-    if [[ -f "$mok_key" && -n "${OSI_USER_PASSWORD:-}" ]]; then
-        log_info "Starting MOK enrollment process"
-        local enroll_cmd="printf '%s\n%s\n' '${OSI_USER_PASSWORD}' '${OSI_USER_PASSWORD}' | mokutil --import '$mok_key'"
+    # Step 1: MOK Enrollment (password = shanios)
+    if [[ -f "$mok_key" ]]; then
+        log_info "Starting MOK enrollment process with fixed password"
+        local enroll_cmd="printf '%s\n%s\n' 'shanios' 'shanios' | mokutil --import '$mok_key'"
         local mok_output=""
         mok_output=$(run_in_target "$enroll_cmd" 2>&1) || {
             log_warn "MOK enrollment failed: ${mok_output:-Unknown error}"
@@ -631,7 +650,7 @@ setup_secureboot() {
             needs_reboot=1
         fi
     else
-        log_info "Skipping MOK enrollment - missing key or password."
+        log_info "Skipping MOK enrollment - missing key."
     fi
 
     # Step 2: Mount efivarfs
@@ -706,6 +725,7 @@ main() {
 
   setup_plymouth_theme_target
   setup_firewall_kdeconnect
+  setup_firewall_waydroid
   enable_plasma_setup_service
   generate_mok_keys_target
   install_secureboot_components_target
