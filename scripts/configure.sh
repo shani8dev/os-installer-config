@@ -170,8 +170,8 @@ mount_overlay() {
   #############################
   log_info "Setting up bind mounts for persistent service state"
   
-  # Service directories should already exist from install.sh
-  local service_dirs=(
+  # /var/lib service directories should already exist from install.sh
+  local varlib_dirs=(
     # Core System Services (Required)
     "dbus"
     "systemd"
@@ -197,26 +197,55 @@ mount_overlay() {
     "nfs"
   )
   
-  for service in "${service_dirs[@]}"; do
+  for service in "${varlib_dirs[@]}"; do
     local source="${TARGET}/data/varlib/${service}"
     local target="${TARGET}/var/lib/${service}"
     
     # Only proceed if source exists (created by install.sh)
     if [[ ! -d "${source}" ]]; then
-      log_info "Skipping ${service}: source directory not found (created by install.sh but may be optional)"
+      log_info "Skipping /var/lib/${service}: source directory not found (created by install.sh but may be optional)"
       continue
     fi
     
     # Check if target exists in the root filesystem
     # Some services may not be installed (e.g., sddm in GNOME, gdm in KDE)
     if [[ ! -d "${target}" ]]; then
-      log_info "Skipping ${service}: not present in root filesystem (service not installed)"
+      log_info "Skipping /var/lib/${service}: not present in root filesystem (service not installed)"
       continue
     fi
     
     # Both source and target exist, create bind mount
-    log_info "Bind mounting ${service}"
-    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount ${service}"
+    log_info "Bind mounting /var/lib/${service}"
+    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/lib/${service}"
+  done
+
+  # /var/spool service directories should already exist from install.sh
+  local varspool_dirs=(
+    # Cron job scheduling
+    "cron"
+    # Print queue management
+    "cups"
+  )
+  
+  for service in "${varspool_dirs[@]}"; do
+    local source="${TARGET}/data/varspool/${service}"
+    local target="${TARGET}/var/spool/${service}"
+    
+    # Only proceed if source exists (created by install.sh)
+    if [[ ! -d "${source}" ]]; then
+      log_info "Skipping /var/spool/${service}: source directory not found (created by install.sh but may be optional)"
+      continue
+    fi
+    
+    # Check if target exists in the root filesystem
+    if [[ ! -d "${target}" ]]; then
+      log_info "Skipping /var/spool/${service}: not present in root filesystem (service not installed)"
+      continue
+    fi
+    
+    # Both source and target exist, create bind mount
+    log_info "Bind mounting /var/spool/${service}"
+    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/spool/${service}"
   done
 }
 
@@ -365,7 +394,7 @@ setup_firewall_kdeconnect() {
 setup_firewall_waydroid() {
   log_info "Configuring offline firewall rules for Waydroid networking"
 
-  # DNS ports required by Waydroid’s internal network
+  # DNS ports required by Waydroid's internal network
   run_in_target "firewall-offline-cmd --zone=trusted --add-port=53/udp"
   run_in_target "firewall-offline-cmd --zone=trusted --add-port=67/udp"
 
@@ -750,4 +779,3 @@ main() {
 }
 
 main
-
