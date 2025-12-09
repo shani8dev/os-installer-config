@@ -362,6 +362,8 @@ create_subvolumes() {
     # Network Services
     "varlib/samba"
     "varlib/nfs"
+    "varspool/cron"
+    "varspool/cups"
     # User data directory
     "downloads"
   )
@@ -428,8 +430,8 @@ extract_snap_image() {
     log_error "Subvolume 'snapd_subvol' not found after extraction"
     exit 1
   fi
-  log_info "Creating snapshot @snap from snapd_subvol"
-  sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snap" || { log_error "Snapshot creation for @snap failed"; exit 1; }
+  log_info "Creating snapshot @snapd from snapd_subvol"
+  sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snapd" || { log_error "Snapshot creation for @snapd failed"; exit 1; }
   log_info "Deleting original subvolume snapd_subvol"
   sudo btrfs subvolume delete "/mnt/snapd_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
 }
