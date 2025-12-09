@@ -422,16 +422,16 @@ extract_flatpak_image() {
 extract_snap_image() {
   log_info "Extracting Snap image into /mnt"
   extract_image "${SNAPFS_SOURCE}" "/mnt"
-  if sudo btrfs subvolume show "/mnt/snap_subvol" &>/dev/null; then
-    log_info "Subvolume 'snap_subvol' detected"
+  if sudo btrfs subvolume show "/mnt/snapd_subvol" &>/dev/null; then
+    log_info "Subvolume 'snapd_subvol' detected"
   else
-    log_error "Subvolume 'snap_subvol' not found after extraction"
+    log_error "Subvolume 'snapd_subvol' not found after extraction"
     exit 1
   fi
-  log_info "Creating snapshot @snap from snap_subvol"
-  sudo btrfs subvolume snapshot "/mnt/snap_subvol" "/mnt/@snap" || { log_error "Snapshot creation for @snap failed"; exit 1; }
-  log_info "Deleting original subvolume snap_subvol"
-  sudo btrfs subvolume delete "/mnt/snap_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
+  log_info "Creating snapshot @snap from snapd_subvol"
+  sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snap" || { log_error "Snapshot creation for @snap failed"; exit 1; }
+  log_info "Deleting original subvolume snapd_subvol"
+  sudo btrfs subvolume delete "/mnt/snapd_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
 }
 
 # Function: create_swapfile
