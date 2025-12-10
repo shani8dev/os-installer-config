@@ -307,7 +307,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@cache" "@log" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
+  local subvolumes=( "@home" "@data" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -362,8 +362,11 @@ create_subvolumes() {
     # Network Services
     "varlib/samba"
     "varlib/nfs"
+    # spool
+    "varspool/anacron"
     "varspool/cron"
     "varspool/cups"
+    "varspool/samba"
     # User data directory
     "downloads"
   )

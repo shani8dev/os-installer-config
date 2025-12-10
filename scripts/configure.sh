@@ -110,6 +110,7 @@ mount_additional_subvols() {
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@snapd"]="/var/lib/snapd|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@waydroid"]="/var/lib/waydroid|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@lxc"]="/var/lib/lxc|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
@@ -222,9 +223,11 @@ mount_overlay() {
   # /var/spool service directories should already exist from install.sh
   local varspool_dirs=(
     # Cron job scheduling
+    "anacron"
     "cron"
     # Print queue management
     "cups"
+    "samba"
   )
   
   for service in "${varspool_dirs[@]}"; do
