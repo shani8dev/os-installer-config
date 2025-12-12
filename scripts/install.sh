@@ -367,6 +367,9 @@ create_subvolumes() {
     "varspool/cron"
     "varspool/cups"
     "varspool/samba"
+    # snap
+    "snap/data"
+    "snap/root"
     # User data directory
     "downloads"
   )
@@ -380,6 +383,12 @@ create_subvolumes() {
       log_info "Service directory ${full_dir} already exists"
     fi
   done
+  
+  # Set restrictive permissions for root's snap directory
+  # CRITICAL: /root/snap inherits these permissions via bind mount
+  log_info "Setting permissions for /data/snap/root"
+  sudo chmod 700 "/mnt/@data/snap/root" || \
+  log_warn "Failed to set 700 permissions on /data/snap/root"
   
   log_info "All required directories created successfully"
 }
