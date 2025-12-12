@@ -109,7 +109,6 @@ mount_additional_subvols() {
     ["@cache"]="/var/cache|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
-    ["@snapd"]="/var/lib/snapd|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@waydroid"]="/var/lib/waydroid|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
