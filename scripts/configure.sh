@@ -723,7 +723,6 @@ main() {
   setup_plymouth_theme_target
   setup_firewall_kdeconnect
   setup_firewall_waydroid
-  enable_plasma_setup_service
   generate_mok_keys_target
   install_secureboot_components_target
   move_keyfile_to_systemd
