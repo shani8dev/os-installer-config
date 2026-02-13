@@ -195,6 +195,10 @@ mount_overlay() {
     # Network Services
     "samba"
     "nfs"
+    "caddy"
+    "tailscale"
+    "fail2ban"
+    "cloudflared"
   )
   
   for service in "${varlib_dirs[@]}"; do

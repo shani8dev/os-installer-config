@@ -362,6 +362,10 @@ create_subvolumes() {
     # Network Services
     "varlib/samba"
     "varlib/nfs"
+    "varlib/caddy"
+    "varlib/tailscale"
+    "varlib/fail2ban"
+    "varlib/cloudflared"
     # spool
     "varspool/anacron"
     "varspool/cron"
