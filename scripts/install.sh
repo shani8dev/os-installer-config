@@ -307,7 +307,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
+  local subvolumes=( "@home" "@data" "@nix" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -342,36 +342,53 @@ create_subvolumes() {
     # Core System Services (Required)
     "varlib/dbus"
     "varlib/systemd"
+    "varlib/fontconfig"
     # Network & Connectivity
     "varlib/NetworkManager"
     "varlib/bluetooth"
-    # Authentication & User Management
-    "varlib/fprint"
-    "varlib/AccountsService"
-    "varlib/boltd"
+    "varlib/firewalld"
+    # File Sharing & Network Services
+    "varlib/samba"
+    "varlib/nfs"
+    # Remote Access & VPN Services
+    "varlib/caddy"
+    "varlib/tailscale"
+    "varlib/cloudflared"
+    "varlib/geoclue"
     # Display Managers
     "varlib/gdm"
     "varlib/sddm"
-    # Hardware & Peripherals
+    # Audio & Peripherals
     "varlib/colord"
-    "varlib/upower"
+    "varlib/pipewire"
+    "varlib/rtkit"
     "varlib/cups"
     "varlib/sane"
-    "varlib/firewalld"
-    "varlib/geoclue"
-    # Network Services
-    "varlib/samba"
-    "varlib/nfs"
-    "varlib/caddy"
-    "varlib/tailscale"
+    "varlib/upower"
+    # User Authentication & Security
+    "varlib/fprint"
+    "varlib/AccountsService"
+    "varlib/boltd"
+    "varlib/sudo"
+    "varlib/sshd"
+    "varlib/polkit-1"
+    # Hardware & Firmware
+    "varlib/fwupd"
+    "varlib/tpm2-tss"
+    # Data Protection & Persistence
     "varlib/fail2ban"
-    "varlib/cloudflared"
-    # spool
+    "varlib/restic"
+    "varlib/rclone"
+    "varlib/appimage"
+    # Job Scheduling Spool
     "varspool/anacron"
     "varspool/cron"
+    "varspool/at"
+    # Print & Mail Spools
     "varspool/cups"
     "varspool/samba"
-    # User data directory
+    "varspool/postfix"
+    # User Downloads
     "downloads"
   )
   
