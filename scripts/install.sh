@@ -238,7 +238,7 @@ do_partitioning() {
   
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
-    sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
+    sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
     # For whole disk, derive partitions: Partition 1 (EFI), Partition 2 (root).
     EFI_PARTITION=$(normalize_partition "1")
     ROOT_PARTITION=$(normalize_partition "2")
