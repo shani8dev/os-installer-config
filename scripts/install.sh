@@ -20,7 +20,7 @@
 #   # - Type: Linux (GPT)
 #   # - Filesystem: Btrfs
 #   # - Label: shani_root
-#   type=linux, name="shani_root"
+#   type=linux-root-x86-64, name="shani_root"
 #
 # Partition 1 is EFI; Partition 2 is used for the Btrfs root filesystem.
 # sfdisk handles alignment automatically (compatible with 512/512e/4Kn disks).
