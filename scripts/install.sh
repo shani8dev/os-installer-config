@@ -261,7 +261,7 @@ do_partitioning() {
 mount_boot_partition() {
   local efi_device="$1"
   log_info "Mounting EFI partition (${efi_device}) at /mnt/boot/efi"
-  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" /mnt/boot/efi \
+  sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" /mnt/boot/efi \
     || { log_error "EFI partition mount failed"; exit 1; }
 }
 
