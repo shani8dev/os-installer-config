@@ -9,16 +9,21 @@
 # It expects the PART_LAYOUT file to contain:
 #
 #   label: gpt
-#   unit: sectors
-#   sector-size: 512
 #
-#   # Create a FAT32 partition for the EFI system (1GB)
-#   start=2048, size=2048000, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+#   # Create a FAT32 partition for the EFI System (1 GiB)
+#   # - Type: UEFI (GPT)
+#   # - Filesystem: FAT32
+#   # - Label: shani_boot
+#   size=1G, type=uefi, name="shani_boot"
 #
-#   # Create a Btrfs partition for root (uses all remaining space)
-#   start=2050048, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+#   # Create a Linux root partition (uses all remaining space)
+#   # - Type: Linux (GPT)
+#   # - Filesystem: Btrfs
+#   # - Label: shani_root
+#   type=linux, name="shani_root"
 #
-# Partition 1 is for EFI; partition 2 (root) will be used for Btrfs.
+# Partition 1 is EFI; Partition 2 is used for the Btrfs root filesystem.
+# sfdisk handles alignment automatically (compatible with 512/512e/4Kn disks).
 #
 # Expected environment variables:
 #   OSI_DEVICE_PATH         – Device path (e.g. /dev/sda or /dev/nvme0n1)
