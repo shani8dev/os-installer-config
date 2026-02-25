@@ -106,6 +106,7 @@ mount_additional_subvols() {
   declare -A subvols=(
     ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@nix"]="/nix|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@cache"]="/var/cache|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
@@ -175,30 +176,44 @@ mount_overlay() {
     # Core System Services (Required)
     "dbus"
     "systemd"
+    "fontconfig"
     # Network & Connectivity
     "NetworkManager"
     "bluetooth"
-    # Authentication & User Management
+    "firewalld"
+    # File Sharing & Network Services
+    "samba"
+    "nfs"
+    # Remote Access & VPN Services
+    "caddy"
+    "tailscale"
+    "cloudflared"
+    "geoclue"
+    # Display Managers
+    "gdm"
+    "sddm"    
+    # Audio & Peripherals
+    "colord"
+    "pipewire"
+    "rtkit"
+    "cups"
+    "sane"
+    "upower"
+    # User Authentication & Security
     "fprint"
     "AccountsService"
     "boltd"
-    # Display Managers
-    "gdm"
-    "sddm"
-    # Hardware & Peripherals
-    "colord"
-    "upower"
-    "cups"
-    "sane"
-    "firewalld"
-    "geoclue"
-    # Network Services
-    "samba"
-    "nfs"
-    "caddy"
-    "tailscale"
+    "sudo"
+    "sshd"
+    "polkit-1"
+    # Hardware & Firmware
+    "fwupd"
+    "tpm2-tss"
+    # Data Protection & Persistence
     "fail2ban"
-    "cloudflared"
+    "restic"
+    "rclone"
+    "appimage"    
   )
   
   for service in "${varlib_dirs[@]}"; do
@@ -225,12 +240,14 @@ mount_overlay() {
 
   # /var/spool service directories should already exist from install.sh
   local varspool_dirs=(
-    # Cron job scheduling
+    # Job Scheduling Spool
     "anacron"
     "cron"
-    # Print queue management
+    "at"
+    # Print & Mail Spools
     "cups"
     "samba"
+    "postfix"
   )
   
   for service in "${varspool_dirs[@]}"; do

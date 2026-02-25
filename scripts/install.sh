@@ -9,16 +9,21 @@
 # It expects the PART_LAYOUT file to contain:
 #
 #   label: gpt
-#   unit: sectors
-#   sector-size: 512
 #
-#   # Create a FAT32 partition for the EFI system (1GB)
-#   start=2048, size=2048000, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+#   # Create a FAT32 partition for the EFI System (1 GiB)
+#   # - Type: UEFI (GPT)
+#   # - Filesystem: FAT32
+#   # - Label: shani_boot
+#   size=1G, type=uefi, name="shani_boot"
 #
-#   # Create a Btrfs partition for root (uses all remaining space)
-#   start=2050048, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+#   # Create a Linux root partition (uses all remaining space)
+#   # - Type: Linux (GPT)
+#   # - Filesystem: Btrfs
+#   # - Label: shani_root
+#   type=linux-root-x86-64, name="shani_root"
 #
-# Partition 1 is for EFI; partition 2 (root) will be used for Btrfs.
+# Partition 1 is EFI; Partition 2 is used for the Btrfs root filesystem.
+# sfdisk handles alignment automatically (compatible with 512/512e/4Kn disks).
 #
 # Expected environment variables:
 #   OSI_DEVICE_PATH         – Device path (e.g. /dev/sda or /dev/nvme0n1)
@@ -238,7 +243,9 @@ do_partitioning() {
   
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
-    sudo sfdisk "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
+    sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
+    sudo partprobe "${OSI_DEVICE_PATH}" || true
+    sudo udevadm settle
     # For whole disk, derive partitions: Partition 1 (EFI), Partition 2 (root).
     EFI_PARTITION=$(normalize_partition "1")
     ROOT_PARTITION=$(normalize_partition "2")
@@ -261,7 +268,7 @@ do_partitioning() {
 mount_boot_partition() {
   local efi_device="$1"
   log_info "Mounting EFI partition (${efi_device}) at /mnt/boot/efi"
-  sudo mount --mkdir /dev/disk/by-label/"${BOOTLABEL}" /mnt/boot/efi \
+  sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" /mnt/boot/efi \
     || { log_error "EFI partition mount failed"; exit 1; }
 }
 
@@ -307,7 +314,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
+  local subvolumes=( "@home" "@data" "@nix" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -342,36 +349,53 @@ create_subvolumes() {
     # Core System Services (Required)
     "varlib/dbus"
     "varlib/systemd"
+    "varlib/fontconfig"
     # Network & Connectivity
     "varlib/NetworkManager"
     "varlib/bluetooth"
-    # Authentication & User Management
-    "varlib/fprint"
-    "varlib/AccountsService"
-    "varlib/boltd"
+    "varlib/firewalld"
+    # File Sharing & Network Services
+    "varlib/samba"
+    "varlib/nfs"
+    # Remote Access & VPN Services
+    "varlib/caddy"
+    "varlib/tailscale"
+    "varlib/cloudflared"
+    "varlib/geoclue"
     # Display Managers
     "varlib/gdm"
     "varlib/sddm"
-    # Hardware & Peripherals
+    # Audio & Peripherals
     "varlib/colord"
-    "varlib/upower"
+    "varlib/pipewire"
+    "varlib/rtkit"
     "varlib/cups"
     "varlib/sane"
-    "varlib/firewalld"
-    "varlib/geoclue"
-    # Network Services
-    "varlib/samba"
-    "varlib/nfs"
-    "varlib/caddy"
-    "varlib/tailscale"
+    "varlib/upower"
+    # User Authentication & Security
+    "varlib/fprint"
+    "varlib/AccountsService"
+    "varlib/boltd"
+    "varlib/sudo"
+    "varlib/sshd"
+    "varlib/polkit-1"
+    # Hardware & Firmware
+    "varlib/fwupd"
+    "varlib/tpm2-tss"
+    # Data Protection & Persistence
     "varlib/fail2ban"
-    "varlib/cloudflared"
-    # spool
+    "varlib/restic"
+    "varlib/rclone"
+    "varlib/appimage"
+    # Job Scheduling Spool
     "varspool/anacron"
     "varspool/cron"
+    "varspool/at"
+    # Print & Mail Spools
     "varspool/cups"
     "varspool/samba"
-    # User data directory
+    "varspool/postfix"
+    # User Downloads
     "downloads"
   )
   
