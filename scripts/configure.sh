@@ -104,6 +104,7 @@ mount_additional_subvols() {
   
   # Define the subvolumes with target paths and additional mount options.
   declare -A subvols=(
+    ["@root"]="/root|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@home"]="/home|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@data"]="/data|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@nix"]="/nix|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
@@ -114,6 +115,8 @@ mount_additional_subvols() {
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@lxc"]="/var/lib/lxc|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@lxd"]="/var/lib/lxd|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@qemu"]="/var/lib/qemu|rw,noatime,nodatacow,nospace_cache"
     ["@libvirt"]="/var/lib/libvirt|rw,noatime,nodatacow,nospace_cache"
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
   )

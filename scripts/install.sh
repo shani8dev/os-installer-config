@@ -314,7 +314,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@home" "@data" "@nix" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@libvirt" "@swap" )
+  local subvolumes=( "@root" "@home" "@data" "@nix" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@lxd" "@libvirt" "@qemu" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
