@@ -314,7 +314,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@root" "@home" "@data" "@nix" "@cache" "@log" "@waydroid" "@containers" "@machines" "@lxc" "@lxd" "@libvirt" "@qemu" "@swap" )
+  local subvolumes=( "@root" "@home" "@data" "@nix" "@cache" "@log" "@flatpak" "@snapd" "@waydroid" "@containers" "@machines" "@lxc" "@lxd" "@libvirt" "@qemu" "@swap" )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -444,6 +444,14 @@ extract_flatpak_image() {
     log_error "Subvolume 'flatpak_subvol' not found after extraction"
     exit 1
   fi
+
+  # Delete existing @flatpak if present (idempotent install safety)
+  if sudo btrfs subvolume show "/mnt/@flatpak" &>/dev/null; then
+    log_info "Existing @flatpak detected — deleting before reseeding"
+    sudo btrfs subvolume delete "/mnt/@flatpak" \
+      || { log_error "Failed to delete existing @flatpak"; exit 1; }
+  fi
+    
   log_info "Creating snapshot @flatpak from flatpak_subvol"
   sudo btrfs subvolume snapshot "/mnt/flatpak_subvol" "/mnt/@flatpak" || { log_error "Snapshot creation for @flatpak failed"; exit 1; }
   log_info "Deleting original subvolume flatpak_subvol"
@@ -461,6 +469,14 @@ extract_snap_image() {
     log_error "Subvolume 'snapd_subvol' not found after extraction"
     exit 1
   fi
+
+  # Delete existing @snapd if present (idempotent install safety)
+  if sudo btrfs subvolume show "/mnt/@snapd" &>/dev/null; then
+    log_info "Existing @snapd detected — deleting before reseeding"
+    sudo btrfs subvolume delete "/mnt/@snapd" \
+      || { log_error "Failed to delete existing @snapd"; exit 1; }
+  fi
+
   log_info "Creating snapshot @snapd from snapd_subvol"
   sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snapd" || { log_error "Snapshot creation for @snapd failed"; exit 1; }
   log_info "Deleting original subvolume snapd_subvol"

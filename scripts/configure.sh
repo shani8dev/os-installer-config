@@ -111,6 +111,7 @@ mount_additional_subvols() {
     ["@cache"]="/var/cache|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@log"]="/var/log|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@flatpak"]="/var/lib/flatpak|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
+    ["@snapd"]="/var/lib/snapd|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@waydroid"]="/var/lib/waydroid|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@containers"]="/var/lib/containers|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
     ["@machines"]="/var/lib/machines|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
@@ -342,7 +343,7 @@ setup_timezone_target() {
 setup_user_target() {
   if [ -n "${OSI_USER_NAME:-}" ]; then
     log_info "Creating primary user: ${OSI_USER_NAME}"
-    local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "libvirt" "kvm" "scanner")
+    local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "scanner" "nixbld" "lxc" "lxd" "libvirt" "kvm")
     for group in "${groups[@]}"; do
       if ! run_in_target "getent group ${group}" >/dev/null; then
         run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
