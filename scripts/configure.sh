@@ -79,7 +79,7 @@ mount_target() {
   temp_root=$(mktemp -d)
   log_info "Determining active slot from @data"
   sudo mount -o subvolid=5 /dev/disk/by-label/"${ROOTLABEL}" "$temp_root" || die "Root mount failed"
-  
+
   if [[ -f "$temp_root/@data/current-slot" ]]; then
     ACTIVE_SLOT=$(< "$temp_root/@data/current-slot")
   else
@@ -90,7 +90,7 @@ mount_target() {
 
   log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
   sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
-  
+
   for fs in proc sys dev run sys/firmware/efi/efivars; do
     sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
   done
@@ -101,7 +101,7 @@ mount_target() {
 # Mount the remaining Btrfs subvolumes to their designated mount points.
 mount_additional_subvols() {
   local device="/dev/disk/by-label/${ROOTLABEL}"
-  
+
   # Define the subvolumes with target paths and additional mount options.
   declare -A subvols=(
     ["@root"]="/root|rw,noatime,compress=zstd,autodefrag,space_cache=v2"
@@ -174,7 +174,7 @@ mount_overlay() {
   # Setup bind mounts for persistent service state
   #############################
   log_info "Setting up bind mounts for persistent service state"
-  
+
   # /var/lib service directories should already exist from install.sh
   local varlib_dirs=(
     # Core System Services (Required)
@@ -195,7 +195,7 @@ mount_overlay() {
     "geoclue"
     # Display Managers
     "gdm"
-    "sddm"    
+    "sddm"
     # Audio & Peripherals
     "colord"
     "pipewire"
@@ -217,26 +217,26 @@ mount_overlay() {
     "fail2ban"
     "restic"
     "rclone"
-    "appimage"    
+    "appimage"
   )
-  
+
   for service in "${varlib_dirs[@]}"; do
     local source="${TARGET}/data/varlib/${service}"
     local target="${TARGET}/var/lib/${service}"
-    
+
     # Only proceed if source exists (created by install.sh)
     if [[ ! -d "${source}" ]]; then
       log_info "Skipping /var/lib/${service}: source directory not found (created by install.sh but may be optional)"
       continue
     fi
-    
+
     # Check if target exists in the root filesystem
     # Some services may not be installed (e.g., sddm in GNOME, gdm in KDE)
     if [[ ! -d "${target}" ]]; then
       log_info "Skipping /var/lib/${service}: not present in root filesystem (service not installed)"
       continue
     fi
-    
+
     # Both source and target exist, create bind mount
     log_info "Bind mounting /var/lib/${service}"
     sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/lib/${service}"
@@ -253,23 +253,23 @@ mount_overlay() {
     "samba"
     "postfix"
   )
-  
+
   for service in "${varspool_dirs[@]}"; do
     local source="${TARGET}/data/varspool/${service}"
     local target="${TARGET}/var/spool/${service}"
-    
+
     # Only proceed if source exists (created by install.sh)
     if [[ ! -d "${source}" ]]; then
       log_info "Skipping /var/spool/${service}: source directory not found (created by install.sh but may be optional)"
       continue
     fi
-    
+
     # Check if target exists in the root filesystem
     if [[ ! -d "${target}" ]]; then
       log_info "Skipping /var/spool/${service}: not present in root filesystem (service not installed)"
       continue
     fi
-    
+
     # Both source and target exist, create bind mount
     log_info "Bind mounting /var/spool/${service}"
     sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/spool/${service}"
@@ -473,7 +473,7 @@ move_keyfile_to_systemd() {
     log_info "Relocating keyfile to systemd directory"
     local src_keyfile="/boot/efi/crypto_keyfile.bin"
     local dest_dir="/etc/cryptsetup-keys.d"
-  
+
     if run_in_target "[ -f ${src_keyfile} ]"; then
       # Move keyfile to systemd's cryptsetup directory
       run_in_target "mkdir -p ${dest_dir} && \
@@ -492,7 +492,7 @@ move_keyfile_to_systemd() {
 generate_crypttab_target() {
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     log_info "Generating /etc/crypttab in the target system"
-    
+
     # Determine the underlying block device from the LUKS mapping.
     local underlying
     underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
@@ -552,7 +552,7 @@ generate_uki_entry() {
   # Retrieve the filesystem UUID from the partition labeled with ROOTLABEL.
   local fs_uuid
   fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}" | tr -d '\n')
-  
+
   local luks_uuid=""
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     # Determine the underlying block device from the LUKS mapping using cryptsetup status.
@@ -607,20 +607,21 @@ generate_uki_entry() {
   fi
 
   # Determine which cmdline file to update.
-  local current_slot
-  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
+  local active_slot
+  active_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
   local cmdfile
-  if [[ "$slot" == "$current_slot" ]]; then
+  if [[ "$slot" == "$active_slot" ]]; then
     cmdfile="${CMDLINE_FILE_CURRENT}"
   else
     cmdfile="${CMDLINE_FILE_CANDIDATE}"
   fi
 
   run_in_target "echo '${cmdline}' > ${cmdfile}"
-  
-  # Determine Active or candidate suffix
+
+  # active_slot   = blue, boots first, Active label, +3-0 tries
+  # candidate_slot = green, mirror, Candidate label, plain .conf
   local suffix=""
-  if [[ "$slot" == "$current_slot" ]]; then
+  if [[ "$slot" == "$active_slot" ]]; then
       suffix=" (Active)"
   else
       suffix=" (Candidate)"
@@ -634,18 +635,34 @@ generate_uki_entry() {
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
 
-  # Create the UEFI boot entry configuration using printf instead of a heredoc.
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf"
+  # Write the boot entry — active slot gets +3-0 tries suffix so systemd-boot
+  # automatically falls back if the new installation fails to boot.
+  # Candidate slot gets a plain entry (no tries) as the stable fallback.
+  # This matches exactly what shani-deploy's finalize_boot_entries produces
+  # so there are no orphaned plain .conf files after the first deploy.
+  # Clean up any stale entries for this slot before writing — matches
+  # the cleanup shani-deploy's finalize_boot_entries performs.
+  run_in_target "rm -f ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}+*.conf ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf" 2>/dev/null || true
+
+  # active_slot gets +3-0 tries — systemd-boot falls back automatically
+  # if installation fails to reach multi-user.target on first boot.
+  # candidate_slot gets plain .conf — stable fallback, no tries needed.
+  local entry_filename
+  if [[ "$slot" == "$active_slot" ]]; then
+    entry_filename="${OS_NAME}-${slot}+3-0.conf"
+  else
+    entry_filename="${OS_NAME}-${slot}.conf"
+  fi
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${entry_filename}"
 }
 
 # Function: generate_loader_conf
 generate_loader_conf() {
   local slot="$1"
-  # Update the loader configuration using printf instead of a heredoc.
-  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\n' > /boot/efi/loader/loader.conf"
-
-  # Set the active boot entry as default using bootctl.
-  run_in_target "bootctl set-default ${OS_NAME}-${current_slot}.conf" || log_warn "bootctl set-default failed"
+  # Default entry uses the +3-0 tries suffix to match what shani-deploy writes.
+  # bootctl set-default is intentionally omitted — it requires efivarfs which
+  # is unreliable inside a chroot, and loader.conf already sets the default.
+  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}+3-0.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
 setup_secureboot() {
@@ -724,11 +741,11 @@ main() {
   mount_target
   mount_additional_subvols
   mount_overlay
-  
+
   setup_hostname_target
   setup_machine_id_target
   setup_keyboard_target
-  
+
   # If SKIP_REGION is set to "yes", skip locale, formats, and timezone configuration.
   if [[ "${SKIP_REGION:-}" == "yes" ]]; then
     log_info "Skipping locale, keyboard, and timezone configuration as per config."
@@ -753,21 +770,31 @@ main() {
   generate_mok_keys_target
   install_secureboot_components_target
   move_keyfile_to_systemd
-  generate_crypttab_target        
-  crypt_dracut_conf             
+  generate_crypttab_target
+  crypt_dracut_conf
 
-  local current_slot
-  current_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
+  # active_slot:   blue — the slot just installed, boots first, gets +3-0 tries.
+  # candidate_slot:  green — identical mirror, stable fallback, plain .conf.
+  local active_slot
+  active_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
   local candidate_slot
-  if [ "${current_slot}" == "blue" ]; then
+  if [ "${active_slot}" == "blue" ]; then
       candidate_slot="green"
   else
       candidate_slot="blue"
   fi
 
-  generate_uki_entry "${current_slot}"
+  generate_uki_entry "${active_slot}"
   generate_uki_entry "${candidate_slot}"
-  generate_loader_conf "${current_slot}"
+  generate_loader_conf "${active_slot}"
+
+  # Write slot markers to /data to match what shani-deploy writes after a deploy.
+  # current-slot  = blue  (active, boots first with +3-0 tries)
+  # previous-slot = green (mirror fallback)
+  run_in_target "echo '${active_slot}' > /data/current-slot"
+  run_in_target "echo '${candidate_slot}' > /data/previous-slot"
+  log_info "Slot markers written: current=${active_slot}, previous=${candidate_slot}"
+
   setup_secureboot
   log_info "Configuration completed successfully!"
 }
