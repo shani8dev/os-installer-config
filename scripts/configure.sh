@@ -299,6 +299,16 @@ setup_hostname_target() {
   fi
 }
 
+# Function: setup_keyboard_target
+setup_keyboard_target() {
+  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ] && [ "${OSI_KEYBOARD_LAYOUT,,}" != "none" ]; then
+    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
+    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
+  else
+    log_info "Keyboard layout variable not provided or set to 'none', skipping keyboard configuration."
+  fi
+}
+
 # Function: setup_locale_target
 setup_locale_target() {
   if [ -n "${OSI_LOCALE:-}" ] && [ "${OSI_LOCALE,,}" != "none" ]; then
@@ -309,15 +319,7 @@ setup_locale_target() {
   fi
 }
 
-# Function: setup_keyboard_target
-setup_keyboard_target() {
-  if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ] && [ "${OSI_KEYBOARD_LAYOUT,,}" != "none" ]; then
-    log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
-    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
-  else
-    log_info "Keyboard layout variable not provided or set to 'none', skipping keyboard configuration."
-  fi
-}
+
 
 # Function: setup_formats_target
 setup_formats_target() {
@@ -394,9 +396,9 @@ setup_autologin_target() {
 
 # Function: set_root_password
 set_root_password() {
-  if [ -n "${OSI_USER_PASSWORD:-}" ]; then
+  if [ -n "${OSI_ROOT_PASSWORD:-}" ]; then
     log_info "Setting root password"
-    printf "root:%s" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd"
+    printf "root:%s" "${OSI_ROOT_PASSWORD}" | run_in_target "chpasswd"
   else
     log_info "No root password provided, skipping root password configuration."
     # Alternatively, you might choose to lock the root account if that is preferred:
@@ -725,13 +727,13 @@ main() {
   
   setup_hostname_target
   setup_machine_id_target
+  setup_keyboard_target
   
-  # If SKIP_REGION is set to "yes", skip locale, keyboard, and timezone configuration.
+  # If SKIP_REGION is set to "yes", skip locale, formats, and timezone configuration.
   if [[ "${SKIP_REGION:-}" == "yes" ]]; then
     log_info "Skipping locale, keyboard, and timezone configuration as per config."
   else
     setup_locale_target
-    setup_keyboard_target
     setup_formats_target
     setup_timezone_target
   fi
@@ -741,10 +743,10 @@ main() {
     log_info "Skipping user configuration as per config."
   else
     setup_user_target
-    set_root_password
     setup_autologin_target
   fi
 
+  set_root_password
   setup_plymouth_theme_target
   setup_firewall_kdeconnect
   setup_firewall_waydroid
