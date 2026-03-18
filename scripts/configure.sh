@@ -10,13 +10,11 @@ trap 'echo "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 
 
 ### Configuration variables
 OS_NAME="shanios"
-OSIDIR="/etc/os-installer"
 ROOTLABEL="shani_root"
 BOOTLABEL="shani_boot"
 CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_blue"
 CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_green"
 UKI_BOOT_ENTRY="/boot/efi/loader/entries"
-CURRENT_SLOT_FILE="/data/current-slot"  # Within the installed system
 
 # Read installer configuration for skip flags
 CONFIG_FILE="/etc/os-installer/config.yaml"
@@ -59,7 +57,7 @@ for var in "${required_vars[@]}"; do
 done
 
 # Warn if encryption is enabled but no encryption PIN is provided.
-if [[ "${OSI_USE_ENCRYPTION:-0}" -eq 1 && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
+if [[ "${OSI_USE_ENCRYPTION:-}" == "1" && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
   echo "[CONFIG][WARN] OSI_USE_ENCRYPTION is enabled, but OSI_ENCRYPTION_PIN is not provided. Proceeding without it." >&2
 fi
 
@@ -71,29 +69,26 @@ die() { log_error "$*"; exit 1; }
 
 
 TARGET="/mnt"
+ACTIVE_SLOT="blue"  # Default; mount_target() confirms this — declared global for set -u
 
 # Function: mount_target
 # Mount the active system subvolume and necessary pseudo-filesystems.
 mount_target() {
-  local temp_root
-  temp_root=$(mktemp -d)
-  log_info "Determining active slot from @data"
-  sudo mount -o subvolid=5 /dev/disk/by-label/"${ROOTLABEL}" "$temp_root" || die "Root mount failed"
-
-  if [[ -f "$temp_root/@data/current-slot" ]]; then
-    ACTIVE_SLOT=$(< "$temp_root/@data/current-slot")
-  else
-    ACTIVE_SLOT="blue"
-    echo "$ACTIVE_SLOT" | sudo tee "$temp_root/@data/current-slot" >/dev/null
-  fi
-  sudo umount "$temp_root" && rmdir "$temp_root"
+  # configure.sh is the installer — blue is always the initial active slot.
+  # Never read a stale current-slot from a previous install on @data; always
+  # start fresh with blue. shani-deploy owns slot switching after first boot.
+  ACTIVE_SLOT="blue"
 
   log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
   sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
 
-  for fs in proc sys dev run sys/firmware/efi/efivars; do
+  for fs in proc sys dev run; do
     sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
   done
+  if [[ -d "/sys/firmware/efi/efivars" ]]; then
+    sudo mount --rbind "/sys/firmware/efi/efivars" "${TARGET}/sys/firmware/efi/efivars" \
+      || log_warn "Failed to bind-mount efivars — Secure Boot features will be unavailable"
+  fi
   sudo mount /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
 }
 
@@ -122,6 +117,8 @@ mount_additional_subvols() {
     ["@swap"]="/swap|rw,noatime,nodatacow,nospace_cache"
   )
 
+  local target=""
+  local options=""
   # Loop through each subvolume in the associative array.
   for subvol in "${!subvols[@]}"; do
     # Split the array value into target path and mount options using the '|' delimiter.
@@ -158,18 +155,20 @@ mount_overlay() {
   #############################
   # Configure overlay for /var
   #############################
-  # Create directories for the /var overlay in the data subvolume
-  sudo mkdir -p "${TARGET}/data/overlay/var/lower" \
-               "${TARGET}/data/overlay/var/upper" \
+  # /var on the read-only root is not writable. An overlay is required here so
+  # that chroot commands during install (localectl, timedatectl, dracut, etc.)
+  # can write to /var. This is an install-time chroot mount only — at runtime
+  # systemd.volatile=state in the kernel cmdline provides a tmpfs for /var
+  # instead, so this overlay is never active on the booted system.
+  sudo mkdir -p "${TARGET}/data/overlay/var/upper" \
+               "${TARGET}/data/overlay/var/lower" \
                "${TARGET}/data/overlay/var/work"
-  sudo chmod 0755 "${TARGET}/data/overlay/var/lower" \
-                  "${TARGET}/data/overlay/var/upper" \
+  sudo chmod 0755 "${TARGET}/data/overlay/var/upper" \
+                  "${TARGET}/data/overlay/var/lower" \
                   "${TARGET}/data/overlay/var/work"
 
-  # Mount the overlay using the correct lower, upper, and work directories
-  log_info "Mounting overlay on /var"
+  log_info "Mounting overlay on /var (install-time chroot only)"
   sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
-
   #############################
   # Setup bind mounts for persistent service state
   #############################
@@ -220,9 +219,12 @@ mount_overlay() {
     "appimage"
   )
 
+  local source=""
+  local target=""
+
   for service in "${varlib_dirs[@]}"; do
-    local source="${TARGET}/data/varlib/${service}"
-    local target="${TARGET}/var/lib/${service}"
+    source="${TARGET}/data/varlib/${service}"
+    target="${TARGET}/var/lib/${service}"
 
     # Only proceed if source exists (created by install.sh)
     if [[ ! -d "${source}" ]]; then
@@ -255,8 +257,8 @@ mount_overlay() {
   )
 
   for service in "${varspool_dirs[@]}"; do
-    local source="${TARGET}/data/varspool/${service}"
-    local target="${TARGET}/var/spool/${service}"
+    source="${TARGET}/data/varspool/${service}"
+    target="${TARGET}/var/spool/${service}"
 
     # Only proceed if source exists (created by install.sh)
     if [[ ! -d "${source}" ]]; then
@@ -384,7 +386,7 @@ setup_user_target() {
 
 # Function: setup_autologin_target
 setup_autologin_target() {
-  if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_NAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" -eq 1 ]; then
+  if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_NAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" == "1" ]; then
     if run_in_target "command -v gdm >/dev/null"; then
       log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
       run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
@@ -458,15 +460,34 @@ setup_firewall_waydroid() {
 
 # Function: generate_mok_keys_target
 generate_mok_keys_target() {
-  log_info "Generating MOK keys for secure boot"
-  run_in_target "mkdir -p /etc/secureboot/keys && \
-    if [ ! -f /etc/secureboot/keys/MOK.key ]; then
-      openssl req -newkey rsa:2048 -nodes -keyout /etc/secureboot/keys/MOK.key \
-        -new -x509 -sha256 -days 3650 -out /etc/secureboot/keys/MOK.crt \
-        -subj '/CN=Shani OS Secure Boot Key/' && \
-      openssl x509 -in /etc/secureboot/keys/MOK.crt -outform DER -out /etc/secureboot/keys/MOK.der && \
-      chmod 0600 /etc/secureboot/keys/MOK.key
-    fi"
+  log_info "Verifying MOK keys"
+  # Keys are normally baked into the image by build-base-image.sh.
+  # If they are missing (custom build, keys wiped, etc.) generate a fresh set.
+  # NOTE: if the image's EFI binaries were already signed with build-time keys,
+  # generating new keys here will produce a mismatch — sbverify will fail in
+  # sign_efi_binary. In that case the image must be rebuilt with the new keys.
+  if run_in_target "test -f /etc/secureboot/keys/MOK.key && \
+                    test -f /etc/secureboot/keys/MOK.crt && \
+                    test -f /etc/secureboot/keys/MOK.der" 2>/dev/null; then
+    log_info "Build-time MOK keys present — skipping generation"
+    return 0
+  fi
+
+  log_warn "MOK keys not found — generating new keys (image EFI binaries will be re-signed)"
+  run_in_target "
+    mkdir -p /etc/secureboot/keys
+    openssl req -newkey rsa:2048 -nodes \
+      -keyout /etc/secureboot/keys/MOK.key \
+      -new -x509 -sha256 -days 3650 \
+      -out /etc/secureboot/keys/MOK.crt \
+      -subj '/CN=Shani OS Secure Boot Key/' || exit 1
+    openssl x509 \
+      -in  /etc/secureboot/keys/MOK.crt \
+      -outform DER \
+      -out /etc/secureboot/keys/MOK.der  || exit 1
+    chmod 0600 /etc/secureboot/keys/MOK.key
+  " || die "MOK key generation failed"
+  log_info "MOK keys generated"
 }
 
 # Function: install_secureboot_components_target
@@ -489,7 +510,7 @@ sign_efi_binary() {
 }
 
 move_keyfile_to_systemd() {
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     log_info "Relocating keyfile to systemd directory"
     local src_keyfile="/boot/efi/crypto_keyfile.bin"
     local dest_dir="/etc/cryptsetup-keys.d"
@@ -510,7 +531,7 @@ move_keyfile_to_systemd() {
 # Function: generate_crypttab_target
 # Updated to dynamically derive the LUKS UUID from the underlying block device.
 generate_crypttab_target() {
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     log_info "Generating /etc/crypttab in the target system"
 
     # Determine the underlying block device from the LUKS mapping.
@@ -546,7 +567,7 @@ generate_crypttab_target() {
 
 # Function: crypt_dracut_conf
 crypt_dracut_conf() {
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     log_info "Configuring dracut for encryption"
     local install_items="/etc/crypttab"
     if run_in_target "[ -f /etc/cryptsetup-keys.d/${ROOTLABEL}.bin ]"; then
@@ -565,16 +586,19 @@ get_kernel_version() {
 
 # Function: generate_uki_entry
 # Generate a Unified Kernel Image (UKI) and bootloader entry for a given slot.
-# Updated to derive the LUKS UUID from the underlying block device.
+# Args: $1 = slot (blue|green), $2 = active_slot (blue|green)
+# active_slot is passed in from main() — do not re-read from the chroot here
+# because the slot file may not be written yet when this function is called.
 generate_uki_entry() {
   local slot="$1"
+  local active_slot="$2"
 
   # Retrieve the filesystem UUID from the partition labeled with ROOTLABEL.
   local fs_uuid
   fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}" | tr -d '\n')
 
   local luks_uuid=""
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     # Determine the underlying block device from the LUKS mapping using cryptsetup status.
     local underlying
     underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
@@ -592,7 +616,7 @@ generate_uki_entry() {
   # Determine the root device: if encryption is enabled, use the decrypted mapping;
   # otherwise, use the filesystem UUID.
   local rootdev
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     rootdev="/dev/mapper/${ROOTLABEL}"
   else
     rootdev="UUID=${fs_uuid}"
@@ -600,7 +624,7 @@ generate_uki_entry() {
 
   # Build encryption parameters if needed.
   local encryption_params=""
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     encryption_params=" rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto"
   fi
 
@@ -613,7 +637,7 @@ generate_uki_entry() {
 
   # For resume settings, choose the appropriate UUID.
   local resume_uuid
-  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     resume_uuid="${luks_uuid}"
   else
     resume_uuid="${fs_uuid}"
@@ -627,8 +651,6 @@ generate_uki_entry() {
   fi
 
   # Determine which cmdline file to update.
-  local active_slot
-  active_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
   local cmdfile
   if [[ "$slot" == "$active_slot" ]]; then
     cmdfile="${CMDLINE_FILE_CURRENT}"
@@ -688,9 +710,30 @@ generate_loader_conf() {
   run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}+*.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
+# Helper: _mokutil_stage_via_hash
+# Stage MOK enrollment using a generated password hash when --root-pw is not
+# available. Generates the hash inside the chroot, writes it to a temp file,
+# then passes it to mokutil --import --hash-file. Uses 'shanios' as the
+# enrollment confirmation password shown to the user by MokManager.
+_mokutil_stage_via_hash() {
+    local der_file="$1"
+    local tmp_hash="/tmp/.mok-enroll-hash"
+    log_info "Staging MOK enrollment via generated password hash (password: shanios)"
+    if run_in_target "
+        set -e
+        mokutil --generate-hash=shanios > '${tmp_hash}' 2>/dev/null
+        mokutil --import '${der_file}' --hash-file '${tmp_hash}' >/dev/null 2>&1
+        rm -f '${tmp_hash}'
+    "; then
+        log_info "MOK enrollment staged — confirm with password 'shanios' in MokManager on first boot"
+    else
+        run_in_target "rm -f '${tmp_hash}'" 2>/dev/null || true
+        log_warn "mokutil hash-file staging failed — MOK.der is present in EFI partition for manual enrollment on first boot"
+    fi
+}
+
 setup_secureboot() {
-    local umount_needed=false
-    local mok_key="/etc/secureboot/keys/MOK.der"
+    local mok_der="/etc/secureboot/keys/MOK.der"
     local efivars="/sys/firmware/efi/efivars"
     local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
     local needs_reboot=0
@@ -701,40 +744,50 @@ setup_secureboot() {
         return 0
     fi
 
-    # Step 1: MOK Enrollment (password = shanios)
-    if [[ -f "$mok_key" ]]; then
-        log_info "Starting MOK enrollment process with fixed password"
-        local enroll_cmd="printf '%s\n%s\n' 'shanios' 'shanios' | mokutil --import '$mok_key'"
-        local mok_output=""
-        mok_output=$(run_in_target "$enroll_cmd" 2>&1) || {
-            log_warn "MOK enrollment failed: ${mok_output:-Unknown error}"
-        }
-        if [[ $? -eq 0 ]]; then
-            log_info "MOK enrollment successful - reboot required"
-            needs_reboot=1
+    # Step 1: Stage MOK for enrollment on first boot.
+    # mokutil --import reads the password from /dev/tty directly — it cannot
+    # be piped via stdin. Two non-interactive approaches:
+    #   - --root-pw: uses the root shadow password (only if OSI_ROOT_PASSWORD set)
+    #   - --hash-file: pre-generate the hash with --generate-hash and pass via file
+    if [[ -f "${TARGET}${mok_der}" ]]; then
+        if [[ -n "${OSI_ROOT_PASSWORD:-}" ]]; then
+            log_info "Staging MOK enrollment via mokutil --root-pw"
+            if run_in_target "mokutil --import '${mok_der}' --root-pw" >/dev/null 2>&1; then
+                log_info "MOK enrollment staged — user must confirm in MokManager on first boot"
+            else
+                log_warn "mokutil --root-pw failed — falling back to hash-file method"
+                _mokutil_stage_via_hash "${mok_der}"
+            fi
+        else
+            log_info "No root password set — staging MOK enrollment via password hash"
+            _mokutil_stage_via_hash "${mok_der}"
         fi
+        needs_reboot=1
     else
-        log_info "Skipping MOK enrollment - missing key."
+        log_warn "MOK.der not found at ${TARGET}${mok_der} — Secure Boot enrollment will not be offered on first boot"
     fi
 
-    # Step 2: Mount efivarfs
-    if ! run_in_target "mountpoint -q '$efivars'" >/dev/null 2>&1; then
-        log_info "Mounting efivarfs in chroot..."
-        run_in_target "mkdir -p '$efivars'" >/dev/null 2>&1 || log_warn "Failed to create efivars directory"
-        run_in_target "mount -t efivarfs efivarfs '$efivars'" >/dev/null 2>&1 && umount_needed=true || {
-            log_warn "Failed to mount efivarfs in chroot"
-        }
-    else
-        log_info "efivarfs already mounted in chroot"
+    # Step 2: efivarfs is already rbind-mounted into the chroot by mount_target().
+    # Verify it is accessible; warn if not but do not abort.
+    if ! run_in_target "mountpoint -q '${efivars}'" >/dev/null 2>&1; then
+        log_warn "efivarfs not accessible in chroot — Secure Boot variable bypass skipped"
+        if (( needs_reboot )); then
+            log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
+        fi
+        return 0
     fi
 
-    # Step 3: Attempt Secure Boot variable bypass
-    run_in_target "test -w '$efivars/$mok_var'" >/dev/null 2>&1 && {
-        log_info "Applying Secure Boot validation bypass"
-        run_in_target "printf '\x01' | efivar --name='$mok_var' --write --type=7 --data=-" >/dev/null 2>&1 || {
-            log_warn "Failed to write Secure Boot bypass variable"
-        }
-    } || log_warn "Bypass variable is not writable in chroot (may be already disabled)"
+    # Step 3: Attempt Secure Boot validation bypass via MokSBState EFI variable.
+    # This disables shim's Secure Boot validation so unsigned kernels can boot
+    # during development. Non-fatal if the variable is read-only or absent.
+    if run_in_target "test -w '${efivars}/${mok_var}'" >/dev/null 2>&1; then
+        log_info "Applying Secure Boot validation bypass via MokSBState"
+        run_in_target "printf '\x01' | efivar --name='${mok_var}' --write --type=7 --data=-" \
+            >/dev/null 2>&1 \
+            || log_warn "Failed to write MokSBState — Secure Boot validation bypass not applied"
+    else
+        log_warn "MokSBState variable not writable in chroot — bypass not applied (may already be disabled or Secure Boot not active)"
+    fi
 
     # Step 4: Verify secure boot status
     local verification_state=""
@@ -745,13 +798,7 @@ setup_secureboot() {
         log_warn "Secure Boot state: ${verification_state}"
     fi
 
-    # Step 5: Cleanup efivarfs
-    if $umount_needed; then
-        log_info "Unmounting efivarfs from chroot"
-        run_in_target "umount '$efivars'" >/dev/null 2>&1 || log_warn "Manual cleanup required: could not unmount efivarfs"
-    fi
-
-    # Step 6: Reboot notice
+    # Step 5: Reboot notice
     if (( needs_reboot )); then
         log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
     fi
@@ -796,10 +843,10 @@ main() {
   generate_crypttab_target
   crypt_dracut_conf
 
-  # active_slot:   blue — the slot just installed, boots first, gets +3-0 tries.
-  # candidate_slot:  green — identical mirror, stable fallback, plain .conf.
-  local active_slot
-  active_slot=$(run_in_target "cat ${CURRENT_SLOT_FILE}" | tr -d '\n')
+  # active_slot is already known from mount_target() via $ACTIVE_SLOT — use it
+  # directly rather than re-reading from the chroot, which may not have the
+  # slot file written yet at this point.
+  local active_slot="${ACTIVE_SLOT}"
   local candidate_slot
   if [ "${active_slot}" == "blue" ]; then
       candidate_slot="green"
@@ -807,19 +854,20 @@ main() {
       candidate_slot="blue"
   fi
 
-  generate_uki_entry "${active_slot}"
-  generate_uki_entry "${candidate_slot}"
-  generate_loader_conf "${active_slot}"
-
-  # Write slot markers to /data to match what shani-deploy writes after a deploy.
-  # current-slot  = blue  (active, boots first with +3-0 tries)
-  # previous-slot = green (mirror fallback)
+  # Write slot markers BEFORE generating UKIs — generate_uki_entry needs
+  # active_slot to select the correct cmdline file and boot entry filename.
   run_in_target "echo '${active_slot}' > /data/current-slot"
   run_in_target "echo '${candidate_slot}' > /data/previous-slot"
   # Signal shani-user-setup.service to run on first boot — same marker that
   # shani-deploy writes on every slot switch. Install is the first slot activation.
   run_in_target "touch /data/user-setup-needed"
   log_info "Slot markers written: current=${active_slot}, previous=${candidate_slot}"
+
+  # Pass active_slot explicitly — generate_uki_entry must not re-read it from
+  # the chroot since that code path has now been removed.
+  generate_uki_entry "${active_slot}" "${active_slot}"
+  generate_uki_entry "${candidate_slot}" "${active_slot}"
+  generate_loader_conf "${active_slot}"
 
   setup_secureboot
   log_info "Configuration completed successfully!"
