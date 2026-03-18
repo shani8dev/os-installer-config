@@ -345,15 +345,35 @@ setup_timezone_target() {
 setup_user_target() {
   if [ -n "${OSI_USER_NAME:-}" ]; then
     log_info "Creating primary user: ${OSI_USER_NAME}"
-    local groups=("wheel" "input" "realtime" "video" "sys" "cups" "lp" "scanner" "nixbld" "lxc" "lxd" "libvirt" "kvm")
-    for group in "${groups[@]}"; do
-      if ! run_in_target "getent group ${group}" >/dev/null; then
+
+    # Read the canonical group list from the image — single source of truth
+    # shared with shani-user-setup and the useradd/adduser wrappers.
+    local extra_groups
+    extra_groups=$(run_in_target "cat /etc/shani-extra-groups 2>/dev/null | tr -d '[:space:]'")
+    if [[ -z "$extra_groups" ]]; then
+      log_warn "setup_user_target: /etc/shani-extra-groups is missing or empty — adding wheel only"
+    fi
+
+    # wheel is installer-specific (sudo access); it is intentionally absent from
+    # shani-extra-groups because shani-user-setup must not grant sudo to users
+    # added post-install. Add it here only, for the primary installer-created user.
+    local groups_str="wheel${extra_groups:+,${extra_groups}}"
+
+    # Ensure every group exists before useradd — some may be absent on minimal profiles.
+    IFS=',' read -ra groups_arr <<< "$groups_str"
+    for group in "${groups_arr[@]}"; do
+      if ! run_in_target "getent group ${group} >/dev/null 2>&1"; then
         run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
       fi
     done
-    run_in_target "useradd -m -s /bin/zsh -G '$(IFS=,; echo "${groups[*]}")' '${OSI_USER_NAME}'" || die "User creation failed"
+
+    # Call useradd via the ShaniOS wrapper so group-merging logic is consistent.
+    run_in_target "PATH=/usr/local/bin:\$PATH useradd -m -s /bin/zsh -G '${groups_str}' '${OSI_USER_NAME}'" \
+      || die "User creation failed"
+
     if [ -n "${OSI_USER_PASSWORD:-}" ]; then
-      printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" || die "Failed to set user password"
+      printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" \
+        || die "Failed to set user password"
     else
       log_warn "No user password provided, user account created without a password."
     fi
@@ -796,6 +816,9 @@ main() {
   # previous-slot = green (mirror fallback)
   run_in_target "echo '${active_slot}' > /data/current-slot"
   run_in_target "echo '${candidate_slot}' > /data/previous-slot"
+  # Signal shani-user-setup.service to run on first boot — same marker that
+  # shani-deploy writes on every slot switch. Install is the first slot activation.
+  run_in_target "touch /data/user-setup-needed"
   log_info "Slot markers written: current=${active_slot}, previous=${candidate_slot}"
 
   setup_secureboot
