@@ -477,7 +477,7 @@ move_keyfile_to_systemd() {
     if run_in_target "[ -f ${src_keyfile} ]"; then
       # Move keyfile to systemd's cryptsetup directory
       run_in_target "mkdir -p ${dest_dir} && \
-        mv ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
+        cp ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
         chmod 0400 ${dest_dir}/${ROOTLABEL}.bin"
     else
       log_warn "No keyfile found in EFI partition; assuming manual unlock"
@@ -659,10 +659,13 @@ generate_uki_entry() {
 # Function: generate_loader_conf
 generate_loader_conf() {
   local slot="$1"
-  # Default entry uses the +3-0 tries suffix to match what shani-deploy writes.
+  # Use a glob pattern for the default entry so systemd-boot matches the active
+  # slot regardless of the current tries counter value (+3-0, +2-1, +1-2, +0-3).
+  # A hardcoded +3-0 suffix would stop matching after the first successful boot
+  # decrements the counter, causing systemd-boot to fall back to its own heuristics.
   # bootctl set-default is intentionally omitted — it requires efivarfs which
   # is unreliable inside a chroot, and loader.conf already sets the default.
-  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}+3-0.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
+  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}+*.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
 setup_secureboot() {
