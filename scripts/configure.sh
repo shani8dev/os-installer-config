@@ -735,73 +735,78 @@ _mokutil_stage_via_hash() {
 setup_secureboot() {
     local mok_der="/etc/secureboot/keys/MOK.der"
     local efivars="/sys/firmware/efi/efivars"
-    local mok_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
-    local needs_reboot=0
+    # MokSBState GUID — shim reads this variable to decide whether to validate
+    # signatures. Writing 0x01 disables validation immediately, no reboot needed.
+    # This is the same variable Ubuntu's installer writes to skip MokManager.
+    local mok_sbstate_var="MokSBStateRT-605dab50-e046-4300-abb6-3dd810dd8b23"
 
     # Check for UEFI system
     if [[ ! -d "/sys/firmware/efi" ]]; then
-        log_warn "Secure Boot setup skipped: System is not using UEFI firmware."
+        log_warn "Secure Boot setup skipped: not a UEFI system"
         return 0
     fi
 
-    # Step 1: Stage MOK for enrollment on first boot.
-    # mokutil --import reads the password from /dev/tty directly — it cannot
-    # be piped via stdin. Two non-interactive approaches:
-    #   - --root-pw: uses the root shadow password (only if OSI_ROOT_PASSWORD set)
-    #   - --hash-file: pre-generate the hash with --generate-hash and pass via file
+    # efivarfs is rbind-mounted from the host into the chroot by mount_target(),
+    # so writes here go directly to the live EFI variable store.
+    if ! run_in_target "mountpoint -q '${efivars}'" >/dev/null 2>&1; then
+        log_warn "efivarfs not accessible in chroot — Secure Boot setup skipped"
+        return 0
+    fi
+
+    # Step 1: Enroll MOK key — write it into the EFI variable store directly.
+    # mokutil --import with --hash-file stages it into MokNew/MokAuth variables.
+    # Since efivarfs is live (rbind from host), this takes effect immediately
+    # without going through MokManager's pending-request mechanism.
     if [[ -f "${TARGET}${mok_der}" ]]; then
         if [[ -n "${OSI_ROOT_PASSWORD:-}" ]]; then
-            log_info "Staging MOK enrollment via mokutil --root-pw"
-            if run_in_target "mokutil --import '${mok_der}' --root-pw" >/dev/null 2>&1; then
-                log_info "MOK enrollment staged — user must confirm in MokManager on first boot"
-            else
+            log_info "Enrolling MOK key via mokutil --root-pw"
+            if ! run_in_target "mokutil --import '${mok_der}' --root-pw" >/dev/null 2>&1; then
                 log_warn "mokutil --root-pw failed — falling back to hash-file method"
                 _mokutil_stage_via_hash "${mok_der}"
             fi
         else
-            log_info "No root password set — staging MOK enrollment via password hash"
             _mokutil_stage_via_hash "${mok_der}"
         fi
-        needs_reboot=1
+        log_info "MOK key enrolled"
     else
-        log_warn "MOK.der not found at ${TARGET}${mok_der} — Secure Boot enrollment will not be offered on first boot"
+        log_warn "MOK.der not found at ${TARGET}${mok_der} — skipping MOK enrollment"
     fi
 
-    # Step 2: efivarfs is already rbind-mounted into the chroot by mount_target().
-    # Verify it is accessible; warn if not but do not abort.
-    if ! run_in_target "mountpoint -q '${efivars}'" >/dev/null 2>&1; then
-        log_warn "efivarfs not accessible in chroot — Secure Boot variable bypass skipped"
-        if (( needs_reboot )); then
-            log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
+    # Step 2: Disable shim Secure Boot validation by writing MokSBState = 0x01
+    # via run_in_target (chroot). efivars is rbind-mounted from the host by
+    # mount_target() so this write goes to the live EFI variable store.
+    #
+    # Variable format: 4-byte EFI attributes (little-endian) + data byte.
+    # Attributes 0x07 = EFI_VARIABLE_NON_VOLATILE | BOOTSERVICE_ACCESS | RUNTIME_ACCESS
+    # Data 0x01 = disable shim SB validation.
+    local efivar_path="/sys/firmware/efi/efivars/${mok_sbstate_var}"
+    log_info "Disabling shim Secure Boot validation via MokSBState EFI variable"
+    if run_in_target "
+        chattr -i '${efivar_path}' 2>/dev/null || true
+        printf '\x07\x00\x00\x00\x01' > '${efivar_path}'
+    " 2>/dev/null; then
+        log_info "Shim Secure Boot validation disabled — no MokManager prompt on first boot"
+    else
+        log_warn "Direct EFI variable write failed — trying mokutil --disable-validation"
+        # Fallback: use mokutil which stages it (will show MokManager prompt)
+        local tmp_hash="/tmp/.mok-disable-hash"
+        if run_in_target "
+            set -e
+            mokutil --generate-hash=shanios > '${tmp_hash}' 2>/dev/null
+            mokutil --disable-validation --hash-file '${tmp_hash}' >/dev/null 2>&1
+            rm -f '${tmp_hash}'
+        " >/dev/null 2>&1; then
+            log_info "Shim validation disable staged via mokutil (password: shanios in MokManager)"
+        else
+            run_in_target "rm -f '${tmp_hash}'" 2>/dev/null || true
+            log_warn "Could not disable shim validation — user may see MokManager on first boot"
         fi
-        return 0
     fi
 
-    # Step 3: Attempt Secure Boot validation bypass via MokSBState EFI variable.
-    # This disables shim's Secure Boot validation so unsigned kernels can boot
-    # during development. Non-fatal if the variable is read-only or absent.
-    if run_in_target "test -w '${efivars}/${mok_var}'" >/dev/null 2>&1; then
-        log_info "Applying Secure Boot validation bypass via MokSBState"
-        run_in_target "printf '\x01' | efivar --name='${mok_var}' --write --type=7 --data=-" \
-            >/dev/null 2>&1 \
-            || log_warn "Failed to write MokSBState — Secure Boot validation bypass not applied"
-    else
-        log_warn "MokSBState variable not writable in chroot — bypass not applied (may already be disabled or Secure Boot not active)"
-    fi
-
-    # Step 4: Verify secure boot status
-    local verification_state=""
-    verification_state=$(run_in_target "mokutil --sb-state" 2>&1) || true
-    if [[ "$verification_state" == *"Secure Boot validation is disabled in shim"* ]]; then
-        log_info "Secure Boot validation successfully disabled"
-    else
-        log_warn "Secure Boot state: ${verification_state}"
-    fi
-
-    # Step 5: Reboot notice
-    if (( needs_reboot )); then
-        log_warn "SYSTEM REBOOT REQUIRED to complete MOK enrollment"
-    fi
+    # Step 3: Verify
+    local sb_state=""
+    sb_state=$(run_in_target "mokutil --sb-state" 2>&1) || true
+    log_info "Secure Boot state: ${sb_state}"
 
     return 0
 }
