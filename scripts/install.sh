@@ -56,7 +56,7 @@ get_efi_disk_info() {
   local efi_partition="$1"
   local efi_disk=""
   local efi_part_num=""
-  
+
   # Handle different partition naming schemes
   if [[ "${efi_partition}" =~ ^(/dev/nvme[0-9]+n[0-9]+)p([0-9]+)$ ]]; then
     # NVMe: /dev/nvme0n1p1 -> disk=/dev/nvme0n1, part=1
@@ -74,7 +74,7 @@ get_efi_disk_info() {
     log_warn "Unable to parse EFI partition path: ${efi_partition}"
     return 1
   fi
-  
+
   log_info "Derived EFI disk: ${efi_disk}, partition: ${efi_part_num}"
   echo "${efi_disk}" "${efi_part_num}"
 }
@@ -88,13 +88,13 @@ create_efi_boot_entry() {
   local efi_loader="$4"    # Path to the EFI loader relative to the EFI partition (e.g., '\EFI\shanios\grubx64.efi')
 
   log_info "Attempting to create EFI boot entry..."
-  
+
   # Check if we're in a UEFI environment
   if [ ! -d "/sys/firmware/efi" ]; then
     log_warn "Not running in UEFI mode - skipping EFI boot entry creation"
     return 0
   fi
-  
+
   # Check if efibootmgr is available and working
   if ! sudo efibootmgr >/dev/null 2>&1; then
     log_warn "efibootmgr not working (possibly no EFI variables access) - skipping EFI boot entry creation"
@@ -102,11 +102,11 @@ create_efi_boot_entry() {
   fi
 
   log_info "Looking for an existing UEFI boot entry labeled '${boot_label}'..."
-  
+
   # List current entries and search for an exact match of the boot label
   local existing_entry
   existing_entry=$(sudo efibootmgr 2>/dev/null | grep -wF "${boot_label}" || true)
-  
+
   if [ -n "$existing_entry" ]; then
     # Extract the boot number using sed (matches a hexadecimal after 'Boot')
     local bootnum
@@ -129,7 +129,7 @@ create_efi_boot_entry() {
   log_info "  Disk: ${efi_disk}"
   log_info "  Partition: ${efi_part}"
   log_info "  Loader: ${efi_loader}"
-  
+
   if sudo efibootmgr --create --disk "${efi_disk}" --part "${efi_part}" \
     --label "${boot_label}" --loader "${efi_loader}" 2>/dev/null; then
     log_info "EFI boot entry '${boot_label}' created successfully."
@@ -192,7 +192,8 @@ SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
 # Pre-check critical files
 [[ ! -f "${PART_LAYOUT}" ]] && { log_error "Partition layout file not found at ${PART_LAYOUT}"; exit 1; }
 [[ ! -f "${ROOTFSZST_SOURCE}" ]] && { log_error "System image not found at ${ROOTFSZST_SOURCE}"; exit 1; }
-[[ ! -f "${FLATPAKFS_SOURCE}" ]] && { log_error "Flatpak image not found at ${FLATPAKFS_SOURCE}"; exit 1; }
+[[ ! -f "${FLATPAKFS_SOURCE}" ]] && log_info "Flatpak image not found at ${FLATPAKFS_SOURCE} — Flatpak install will be skipped."
+[[ ! -f "${SNAPFS_SOURCE}" ]] && log_info "Snap image not found at ${SNAPFS_SOURCE} — Snap install will be skipped."
 
 # Function: get_partition_prefix
 # If the device is NVMe or MMC/eMMC, append a "p" (e.g., /dev/nvme0n1 becomes /dev/nvme0n1p)
@@ -240,7 +241,7 @@ log_info "Starting disk setup..."
 do_partitioning() {
   log_info "Setting ${OSI_DEVICE_PATH} to read-write mode."
   sudo blockdev --setrw "${OSI_DEVICE_PATH}" || log_warn "Could not force device to read-write mode; proceeding anyway."
-  
+
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
     sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
@@ -325,12 +326,12 @@ create_subvolumes() {
   done
 
   # Create overlay directories
-  local overlay_dirs=( 
-    "overlay/etc/lower" 
-    "overlay/etc/upper" 
-    "overlay/etc/work" 
-    "overlay/var/lower" 
-    "overlay/var/upper" 
+  local overlay_dirs=(
+    "overlay/etc/lower"
+    "overlay/etc/upper"
+    "overlay/etc/work"
+    "overlay/var/lower"
+    "overlay/var/upper"
     "overlay/var/work"
   )
   for dir in "${overlay_dirs[@]}"; do
@@ -398,7 +399,7 @@ create_subvolumes() {
     # User Downloads
     "downloads"
   )
-  
+
   for dir in "${varlib_dirs[@]}"; do
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then
@@ -408,7 +409,7 @@ create_subvolumes() {
       log_info "Service directory ${full_dir} already exists"
     fi
   done
-  
+
   log_info "All required directories created successfully"
 }
 
@@ -451,7 +452,7 @@ extract_flatpak_image() {
     sudo btrfs subvolume delete "/mnt/@flatpak" \
       || { log_error "Failed to delete existing @flatpak"; exit 1; }
   fi
-    
+
   log_info "Creating snapshot @flatpak from flatpak_subvol"
   sudo btrfs subvolume snapshot "/mnt/flatpak_subvol" "/mnt/@flatpak" || { log_error "Snapshot creation for @flatpak failed"; exit 1; }
   log_info "Deleting original subvolume flatpak_subvol"
@@ -487,13 +488,13 @@ extract_snap_image() {
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
   local available_mb=$(df -BM /mnt | awk 'NR==2 {print $4}' | sed 's/M//')
-  
+
   if (( available_mb < SWAPFILE_SIZE )); then
     log_warn "Insufficient space for swapfile. Available: ${available_mb}MB, Required: ${SWAPFILE_SIZE}MB"
     log_info "Skipping swapfile creation. System will use zram for swap."
     return 0
   fi
-  
+
   log_info "Creating swapfile at /mnt/@swap/swapfile"
   sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/@swap/swapfile" || { log_error "Swapfile creation failed"; exit 1; }
   sudo swapon "/mnt/@swap/swapfile" || { log_error "Swapfile activation failed"; exit 1; }
@@ -506,18 +507,30 @@ do_setup() {
   mount_top_level
   create_subvolumes
   extract_system_image
-  extract_flatpak_image
+
+  if [[ -f "${FLATPAKFS_SOURCE}" ]]; then
+    extract_flatpak_image
+  else
+    log_info "Skipping Flatpak image extraction (flatpakfs.zst not present on ISO)."
+  fi
+
+  if [[ -f "${SNAPFS_SOURCE}" ]]; then
+    extract_snap_image
+  else
+    log_info "Skipping Snap image extraction (snapfs.zst not present on ISO)."
+  fi
+
   create_swapfile
 
   # --- Create UEFI boot entry with improved error handling ---
   log_info "Setting up UEFI boot entry..."
-  
+
   # Get disk and partition info
   local efi_info
   if efi_info=$(get_efi_disk_info "${EFI_PARTITION}"); then
     local efi_disk efi_part_num
     read -r efi_disk efi_part_num <<< "${efi_info}"
-    
+
     # Create the boot entry (won't fail the script if it doesn't work)
     create_efi_boot_entry "${efi_disk}" "${efi_part_num}" "${OS_NAME}" '\EFI\BOOT\BOOTX64.EFI'
   else
