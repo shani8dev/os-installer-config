@@ -707,7 +707,7 @@ generate_loader_conf() {
   # decrements the counter, causing systemd-boot to fall back to its own heuristics.
   # bootctl set-default is intentionally omitted — it requires efivarfs which
   # is unreliable inside a chroot, and loader.conf already sets the default.
-  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}+*.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
+  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
 # Helper: _mokutil_stage_via_hash
@@ -716,7 +716,7 @@ generate_loader_conf() {
 # MokManager will prompt the user to confirm with password 'shanios' on first boot.
 _mokutil_stage_via_hash() {
     local der_file="$1"
-    local tmp_hash="/tmp/.mok-enroll-hash"
+    local tmp_hash="/run/.mok-enroll-hash"
     log_info "Staging MOK enrollment via generated password hash (password: shanios)"
     if run_in_target "
         set -e
