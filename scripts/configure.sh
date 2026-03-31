@@ -58,7 +58,8 @@ done
 
 # Warn if encryption is enabled but no encryption PIN is provided.
 if [[ "${OSI_USE_ENCRYPTION:-}" == "1" && -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
-  echo "[CONFIG][WARN] OSI_USE_ENCRYPTION is enabled, but OSI_ENCRYPTION_PIN is not provided. Proceeding without it." >&2
+  echo "[CONFIG][ERROR] OSI_USE_ENCRYPTION is enabled but OSI_ENCRYPTION_PIN is not set — a passphrase is required" >&2
+  exit 1
 fi
 
 # Logging functions (consistent with install.sh)
@@ -673,28 +674,7 @@ sign_efi_binary() {
   log_info "EFI binary signed and verified: ${binary}"
 }
 
-move_keyfile_to_systemd() {
-  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
-    log_info "Relocating keyfile to systemd directory"
-    local src_keyfile="/boot/efi/crypto_keyfile.bin"
-    local dest_dir="/etc/cryptsetup-keys.d"
 
-    if run_in_target "[ -f ${src_keyfile} ]"; then
-      # Move (not copy) the keyfile off the ESP into the cryptsetup keys directory.
-      # Leaving it on the ESP exposes the raw LUKS key to anyone who can mount the
-      # EFI partition — the ESP is typically world-readable FAT32 with no encryption.
-      run_in_target "mkdir -p ${dest_dir} && \
-        cp ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
-        chmod 0400 ${dest_dir}/${ROOTLABEL}.bin && \
-        rm -f ${src_keyfile}"
-      log_info "Keyfile moved from ESP to ${dest_dir}/${ROOTLABEL}.bin"
-    else
-      log_warn "No keyfile found in EFI partition; assuming manual unlock"
-    fi
-  else
-    log_info "Encryption not enabled; skipping the cryptfile relocation"
-  fi
-}
 
 # Function: detect_luks_uuid
 # Detect the LUKS UUID once and cache it in LUKS_UUID (global).
@@ -728,16 +708,10 @@ generate_crypttab_target() {
       die "LUKS_UUID is not set — ensure detect_luks_uuid() ran successfully"
     fi
 
-    # Set keyfile option: use keyfile if it exists, otherwise "none".
-    local keyfile_path="/etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
-    local keyfile_option
-    if run_in_target "[ -f '${keyfile_path}' ]"; then
-      keyfile_option="${keyfile_path}"
-    else
-      keyfile_option="none"
-    fi
-
-    local entry="${ROOTLABEL} UUID=${LUKS_UUID} ${keyfile_option} luks,discard"
+    # Passphrase-only system — credential field is always 'none'.
+    # TPM2 auto-unlock is an additive post-install enrollment (gen-efi enroll-tpm2)
+    # and does not require a keyfile entry here.
+    local entry="${ROOTLABEL} UUID=${LUKS_UUID} none luks,discard"
     run_in_target "echo '${entry}' > /etc/crypttab"
     log_info "/etc/crypttab generated with entry: ${entry}"
   else
@@ -749,11 +723,8 @@ generate_crypttab_target() {
 crypt_dracut_conf() {
   if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     log_info "Configuring dracut for encryption"
-    local install_items="/etc/crypttab"
-    if run_in_target "[ -f /etc/cryptsetup-keys.d/${ROOTLABEL}.bin ]"; then
-      install_items+=" /etc/cryptsetup-keys.d/${ROOTLABEL}.bin"
-    fi
-    run_in_target "echo 'install_items+=\" ${install_items} \"' > /etc/dracut.conf.d/99-crypt-key.conf"
+    # Passphrase-only: only /etc/crypttab needed in initramfs.
+    run_in_target "echo 'install_items+=\" /etc/crypttab \"' > /etc/dracut.conf.d/99-crypt-key.conf"
   else
     log_info "Encryption not enabled; skipping dracut for encryption config generation"
   fi
@@ -983,7 +954,6 @@ main() {
   setup_firewall_waydroid
   generate_mok_keys_target
   install_secureboot_components_target
-  move_keyfile_to_systemd
   detect_luks_uuid
   generate_crypttab_target
   crypt_dracut_conf

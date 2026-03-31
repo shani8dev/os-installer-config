@@ -30,8 +30,7 @@
 #   OSI_DEVICE_IS_PARTITION – 0 for whole device, 1 if a partition is provided
 #   OSI_DEVICE_EFI_PARTITION– (Required when OSI_DEVICE_IS_PARTITION=1) EFI partition path.
 #   OSI_USE_ENCRYPTION      – 1 to enable encryption, 0 otherwise.
-#   OSI_ENCRYPTION_PIN      – (Optional) PIN for encryption. If absent and encryption is enabled,
-#                              a keyfile will be generated (only works when an EFI partition is available).
+#   OSI_ENCRYPTION_PIN      – Passphrase for LUKS encryption. Required when OSI_USE_ENCRYPTION=1.
 #
 # The PART_LAYOUT file is expected at: ${OSIDIR}/bits/part.sfdisk
 #
@@ -163,7 +162,8 @@ check_env() {
     [ -z "${!var:-}" ] && missing_vars+=("$var")
   done
   if [ "${OSI_USE_ENCRYPTION:-0}" -eq 1 ] && [ -z "${OSI_ENCRYPTION_PIN:-}" ]; then
-    log_info "No OSI_ENCRYPTION_PIN provided; keyfile-based unlocking will be used."
+    log_error "OSI_USE_ENCRYPTION is enabled but OSI_ENCRYPTION_PIN is not set — a passphrase is required"
+    exit 1
   fi
   if [ ${#missing_vars[@]} -gt 0 ]; then
     log_error "Missing required environment variables: ${missing_vars[*]}"
@@ -283,18 +283,9 @@ create_filesystems() {
 
   # Set up encryption on the root partition if requested.
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-    if [ -n "${OSI_ENCRYPTION_PIN:-}" ]; then
-      log_info "Setting up LUKS encryption on ${ROOT_PARTITION} using provided encryption PIN"
-      echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
-      echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
-    else
-      log_info "No encryption PIN provided; generating keyfile in EFI partition"
-      sudo dd if=/dev/urandom of=/mnt/boot/efi/crypto_keyfile.bin bs=4096 count=1
-      sudo chmod 0400 /mnt/boot/efi/crypto_keyfile.bin
-      sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-      sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" --key-file /mnt/boot/efi/crypto_keyfile.bin
-      export OSI_KEYFILE="/boot/efi/crypto_keyfile.bin"
-    fi
+    log_info "Setting up LUKS encryption on ${ROOT_PARTITION}"
+    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
+    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
     BTRFS_TARGET="${ROOT_PARTITION}"
