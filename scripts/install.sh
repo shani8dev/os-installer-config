@@ -320,6 +320,13 @@ create_subvolumes() {
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
       sudo btrfs subvolume create "/mnt/${subvol}" || { log_error "Failed to create subvolume ${subvol}"; exit 1; }
+      # @swap must have no-COW set — Btrfs requires it for swapfiles and for
+      # nodatacow mount option to take effect. Set it immediately after creation
+      # before any data is written.
+      if [[ "${subvol}" == "@swap" ]]; then
+        sudo chattr +C "/mnt/${subvol}" 2>/dev/null \
+          || log_warn "Could not set no-COW on @swap — swapfile creation may fail"
+      fi
     else
       log_info "Subvolume ${subvol} already exists"
     fi
@@ -432,6 +439,8 @@ extract_system_image() {
   sudo btrfs subvolume delete "/mnt/shanios_base" || log_warn "Could not delete shanios_base; please remove manually later"
   log_info "Setting active slot marker to 'blue'"
   echo "blue" | sudo tee "/mnt/@data/current-slot" > /dev/null || { log_error "Failed to set active slot marker"; exit 1; }
+  log_info "Setting previous slot marker to 'green'"
+  echo "green" | sudo tee "/mnt/@data/previous-slot" > /dev/null || { log_error "Failed to set previous slot marker"; exit 1; }
 }
 
 # Function: extract_flatpak_image
@@ -487,7 +496,8 @@ extract_snap_image() {
 # Function: create_swapfile
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
-  local available_mb=$(df -BM /mnt | awk 'NR==2 {print $4}' | sed 's/M//')
+  local available_mb
+  available_mb=$(df -BM /mnt | awk 'NR==2 {print $4}' | sed 's/M//')
 
   if (( available_mb < SWAPFILE_SIZE )); then
     log_warn "Insufficient space for swapfile. Available: ${available_mb}MB, Required: ${SWAPFILE_SIZE}MB"

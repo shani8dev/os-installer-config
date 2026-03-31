@@ -301,11 +301,141 @@ setup_hostname_target() {
   fi
 }
 
+# Function: parse_keyboard_layout
+# Parses OSI_KEYBOARD_LAYOUT into the four canonical localectl fields:
+#   x11_layouts  — comma-separated layout list  (e.g. "in,us")
+#   x11_model    — keyboard model               (almost always "")
+#   x11_variant  — comma-separated variant list (e.g. "hin,")
+#   x11_options  — comma-separated option list  (e.g. "grp:alt_shift_toggle")
+#   vconsole_map — single keymap for TTY / vconsole.conf (first layout, no variant)
+#
+# Supported input formats (can be combined):
+#   Simple       "us"                  → layouts=us
+#   Variant      "us:dvorak"           → layouts=us  variant=dvorak
+#   Multi        "us,in"               → layouts=us,in          (auto-adds toggle option)
+#   Plus-multi   "in+eng"              → layouts=in,eng          (auto-adds toggle option)
+#   Plus-option  "us+grp:caps_toggle"  → layouts=us  options+=grp:caps_toggle
+#   Mixed        "in:hin+eng"          → layouts=in,eng variant=hin,
+#   Triple       "in+hin+eng"          → layouts=in,hin,eng      (auto-adds toggle option)
+#   Full         "in:hin+eng+grp:win"  → layouts=in,eng variant=hin, options+=grp:win
+parse_keyboard_layout() {
+  local raw="$1"
+  x11_layouts=""
+  x11_model=""
+  x11_variant=""
+  x11_options=""
+  vconsole_map=""
+
+  # Split on '+' to get tokens; each token is either:
+  #   a) a layout[:variant] token  — does NOT contain ':'  OR contains ':' but left side
+  #      is a known short layout code (2–3 chars, no underscore) and right side has no '='
+  #   b) an x11 option             — contains ':' and right side contains letters (grp:foo)
+  #
+  # Strategy: iterate tokens. If a token looks like an option (contains ':' and the left
+  # side looks like an option group name: grp, ctrl, caps, lv3, compose, terminate, etc.),
+  # treat it as an option. Otherwise treat it as layout[:variant].
+
+  local raw_tokens
+  IFS='+' read -ra raw_tokens <<< "$raw"
+
+  local layout_tokens=()
+  local option_tokens=()
+
+  local option_groups="grp|ctrl|caps|lv3|lv5|compose|terminate|numpad|kpdl|nbsp|f|shift|ibus"
+
+  for token in "${raw_tokens[@]}"; do
+    if [[ "$token" == *":"* ]]; then
+      local lhs="${token%%:*}"
+      # If the left-hand side matches a known option group, it's an x11 option
+      if [[ "$lhs" =~ ^(${option_groups})$ ]]; then
+        option_tokens+=("$token")
+      else
+        # It's a layout:variant token
+        layout_tokens+=("$token")
+      fi
+    else
+      # No colon — plain layout name (e.g. "us", "in", "eng")
+      layout_tokens+=("$token")
+    fi
+  done
+
+  # Also handle pre-comma-separated layouts passed directly (e.g. "us,in")
+  # Flatten layout_tokens through comma splitting
+  local all_layouts=()
+  local all_variants=()
+  for token in "${layout_tokens[@]}"; do
+    # Each token may itself be comma-separated (e.g. "us,in" passed as a single token)
+    IFS=',' read -ra sub_tokens <<< "$token"
+    for sub in "${sub_tokens[@]}"; do
+      if [[ "$sub" == *":"* ]]; then
+        all_layouts+=("${sub%%:*}")
+        all_variants+=("${sub##*:}")
+      else
+        all_layouts+=("$sub")
+        all_variants+=("")   # empty variant placeholder to keep arrays aligned
+      fi
+    done
+  done
+
+  # Build x11_layouts and x11_variant as comma-separated strings
+  local layout_count="${#all_layouts[@]}"
+  for (( i=0; i<layout_count; i++ )); do
+    if [[ $i -gt 0 ]]; then
+      x11_layouts+=","
+      x11_variant+=","
+    fi
+    x11_layouts+="${all_layouts[$i]}"
+    x11_variant+="${all_variants[$i]}"
+  done
+
+  # If more than one layout, ensure a group-switch option is present
+  if [[ $layout_count -gt 1 ]]; then
+    local has_grp=0
+    for opt in "${option_tokens[@]}"; do
+      [[ "$opt" == grp:* ]] && has_grp=1 && break
+    done
+    [[ $has_grp -eq 0 ]] && option_tokens+=("grp:alt_shift_toggle")
+  fi
+
+  # Build x11_options as comma-separated string
+  x11_options="$(IFS=','; echo "${option_tokens[*]}")"
+
+  # vconsole / TTY: use only the first layout, no variant
+  vconsole_map="${all_layouts[0]}"
+}
+
 # Function: setup_keyboard_target
+# Parses OSI_KEYBOARD_LAYOUT via parse_keyboard_layout() and applies:
+#   - /etc/vconsole.conf + localectl set-keymap  for TTY (primary layout only)
+#   - localectl set-x11-keymap for X11 (full multi-layout + variant + options)
+#
+# Supported OSI_KEYBOARD_LAYOUT formats:
+#   "us"                  simple single layout
+#   "us:dvorak"           layout with variant
+#   "us,in"              pre-comma-separated multi-layout
+#   "in+eng"             plus-separated multi-layout  (→ in,eng  grp:alt_shift_toggle)
+#   "us+grp:caps_toggle" layout with explicit x11 option
+#   "in:hin+eng"         primary layout+variant, secondary layout
+#   "in+hin+eng"         three-way layout toggle
+#   "in:hin+eng+grp:win" full compound: layout:variant + extra layout + option
 setup_keyboard_target() {
   if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ] && [ "${OSI_KEYBOARD_LAYOUT,,}" != "none" ]; then
     log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
-    run_in_target "echo \"KEYMAP=${OSI_KEYBOARD_LAYOUT}\" > /etc/vconsole.conf && localectl set-keymap '${OSI_KEYBOARD_LAYOUT}' && localectl set-x11-keymap '${OSI_KEYBOARD_LAYOUT}'"
+
+    # Parse into canonical fields (sets x11_layouts, x11_model, x11_variant,
+    # x11_options, vconsole_map as local vars via parse_keyboard_layout)
+    local x11_layouts x11_model x11_variant x11_options vconsole_map
+    parse_keyboard_layout "${OSI_KEYBOARD_LAYOUT}"
+
+    log_info "Parsed keyboard: layouts='${x11_layouts}' variant='${x11_variant}' options='${x11_options}' vconsole='${vconsole_map}'"
+
+    # Apply TTY / console keymap (single layout only)
+    run_in_target "echo \"KEYMAP=${vconsole_map}\" > /etc/vconsole.conf && localectl set-keymap '${vconsole_map}'" \
+      || log_warn "Failed to set console keymap to '${vconsole_map}'"
+
+    # Apply X11 keymap (full localectl call with all four fields)
+    run_in_target "localectl set-x11-keymap '${x11_layouts}' '${x11_model}' '${x11_variant}' '${x11_options}'" \
+      || log_warn "Failed to set X11 keymap: layouts='${x11_layouts}' variant='${x11_variant}' options='${x11_options}'"
   else
     log_info "Keyboard layout variable not provided or set to 'none', skipping keyboard configuration."
   fi
@@ -503,10 +633,44 @@ install_secureboot_components_target() {
 }
 
 # Function: sign_efi_binary
+# Signs an EFI binary inside the chroot using MOK keys.
+# Uses a tmp+backup+verify pattern matching gen-efi.sh so a signing failure
+# never leaves the original binary corrupted or partially overwritten.
 sign_efi_binary() {
   local binary="$1"
   log_info "Signing EFI binary ${binary}"
-  run_in_target "sbsign --key /etc/secureboot/keys/MOK.key --cert /etc/secureboot/keys/MOK.crt --output ${binary} ${binary} && sbverify --cert /etc/secureboot/keys/MOK.crt ${binary}"
+
+  # Skip if already signed with the current key — avoids unnecessary re-signing.
+  if run_in_target "sbverify --cert /etc/secureboot/keys/MOK.crt ${binary}" &>/dev/null 2>&1; then
+    log_info "$(basename "${binary}") already signed with current key — skipping"
+    return 0
+  fi
+
+  # Sign to a .tmp file, verify, then atomically replace the original.
+  # If signing or verification fails the original binary is restored.
+  local tmp_signed="${binary}.signed.tmp"
+  local tmp_backup="${binary}.orig.tmp"
+
+  run_in_target "cp ${binary} ${tmp_backup}" \
+    || { run_in_target "rm -f ${tmp_signed} ${tmp_backup}"; die "Failed to backup ${binary} before signing"; }
+
+  if run_in_target "sbsign --key /etc/secureboot/keys/MOK.key \
+      --cert /etc/secureboot/keys/MOK.crt \
+      --output ${tmp_signed} ${binary}"; then
+    run_in_target "mv ${tmp_signed} ${binary}"
+  else
+    run_in_target "rm -f ${tmp_signed} ${tmp_backup}"
+    die "sbsign failed for ${binary}"
+  fi
+
+  if ! run_in_target "sbverify --cert /etc/secureboot/keys/MOK.crt ${binary}" &>/dev/null 2>&1; then
+    log_warn "sbverify failed for ${binary} — restoring original"
+    run_in_target "mv ${tmp_backup} ${binary}"
+    die "sbverify failed for ${binary} — original restored"
+  fi
+
+  run_in_target "rm -f ${tmp_backup}"
+  log_info "EFI binary signed and verified: ${binary}"
 }
 
 move_keyfile_to_systemd() {
@@ -516,10 +680,14 @@ move_keyfile_to_systemd() {
     local dest_dir="/etc/cryptsetup-keys.d"
 
     if run_in_target "[ -f ${src_keyfile} ]"; then
-      # Move keyfile to systemd's cryptsetup directory
+      # Move (not copy) the keyfile off the ESP into the cryptsetup keys directory.
+      # Leaving it on the ESP exposes the raw LUKS key to anyone who can mount the
+      # EFI partition — the ESP is typically world-readable FAT32 with no encryption.
       run_in_target "mkdir -p ${dest_dir} && \
         cp ${src_keyfile} ${dest_dir}/${ROOTLABEL}.bin && \
-        chmod 0400 ${dest_dir}/${ROOTLABEL}.bin"
+        chmod 0400 ${dest_dir}/${ROOTLABEL}.bin && \
+        rm -f ${src_keyfile}"
+      log_info "Keyfile moved from ESP to ${dest_dir}/${ROOTLABEL}.bin"
     else
       log_warn "No keyfile found in EFI partition; assuming manual unlock"
     fi
@@ -528,24 +696,36 @@ move_keyfile_to_systemd() {
   fi
 }
 
+# Function: detect_luks_uuid
+# Detect the LUKS UUID once and cache it in LUKS_UUID (global).
+# Called from main() before generate_crypttab_target and generate_uki_entry so
+# both callers share one cryptsetup invocation rather than each running their own.
+LUKS_UUID=""
+detect_luks_uuid() {
+  if [[ "${OSI_USE_ENCRYPTION:-}" != "1" ]]; then
+    return 0
+  fi
+  log_info "Detecting LUKS UUID for /dev/mapper/${ROOTLABEL}"
+  local underlying
+  underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
+  if [[ -z "$underlying" ]]; then
+    die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
+  fi
+  LUKS_UUID=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
+  if [[ -z "$LUKS_UUID" ]]; then
+    die "Failed to retrieve LUKS UUID from ${underlying}"
+  fi
+  log_info "LUKS UUID: ${LUKS_UUID}"
+}
+
 # Function: generate_crypttab_target
-# Updated to dynamically derive the LUKS UUID from the underlying block device.
+# Uses the pre-detected LUKS_UUID set by detect_luks_uuid().
 generate_crypttab_target() {
   if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
     log_info "Generating /etc/crypttab in the target system"
 
-    # Determine the underlying block device from the LUKS mapping.
-    local underlying
-    underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
-    if [[ -z "$underlying" ]]; then
-      die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
-    fi
-
-    # Retrieve the LUKS header UUID from the underlying physical device.
-    local luks_uuid
-    luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
-    if [[ -z "$luks_uuid" ]]; then
-      die "Failed to retrieve LUKS UUID from ${underlying}"
+    if [[ -z "$LUKS_UUID" ]]; then
+      die "LUKS_UUID is not set — ensure detect_luks_uuid() ran successfully"
     fi
 
     # Set keyfile option: use keyfile if it exists, otherwise "none".
@@ -557,7 +737,7 @@ generate_crypttab_target() {
       keyfile_option="none"
     fi
 
-    local entry="${ROOTLABEL} UUID=${luks_uuid} ${keyfile_option} luks,discard"
+    local entry="${ROOTLABEL} UUID=${LUKS_UUID} ${keyfile_option} luks,discard"
     run_in_target "echo '${entry}' > /etc/crypttab"
     log_info "/etc/crypttab generated with entry: ${entry}"
   else
@@ -597,20 +777,9 @@ generate_uki_entry() {
   local fs_uuid
   fs_uuid=$(run_in_target "blkid -s UUID -o value /dev/disk/by-label/${ROOTLABEL}" | tr -d '\n')
 
-  local luks_uuid=""
-  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
-    # Determine the underlying block device from the LUKS mapping using cryptsetup status.
-    local underlying
-    underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
-    if [[ -z "$underlying" ]]; then
-      die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
-    fi
-
-    # Retrieve the LUKS header UUID from the underlying physical device.
-    luks_uuid=$(run_in_target "cryptsetup luksUUID ${underlying}" | tr -d '\n')
-    if [[ -z "$luks_uuid" ]]; then
-      die "Failed to retrieve LUKS UUID from ${underlying}"
-    fi
+  # Use the pre-detected LUKS_UUID from detect_luks_uuid() — no second cryptsetup call.
+  if [[ "${OSI_USE_ENCRYPTION:-}" == "1" && -z "$LUKS_UUID" ]]; then
+    die "LUKS_UUID is not set — ensure detect_luks_uuid() ran before generate_uki_entry()"
   fi
 
   # Determine the root device: if encryption is enabled, use the decrypted mapping;
@@ -625,29 +794,44 @@ generate_uki_entry() {
   # Build encryption parameters if needed.
   local encryption_params=""
   if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
-    encryption_params=" rd.luks.uuid=${luks_uuid} rd.luks.name=${luks_uuid}=${ROOTLABEL} rd.luks.options=${luks_uuid}=tpm2-device=auto"
+    encryption_params=" rd.luks.uuid=${LUKS_UUID} rd.luks.name=${LUKS_UUID}=${ROOTLABEL} rd.luks.options=${LUKS_UUID}=tpm2-device=auto"
   fi
 
   local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # Append keyboard mapping parameter if OSI_KEYBOARD_LAYOUT is provided.
+  # Use parse_keyboard_layout to extract the vconsole_map (primary layout only)
+  # since rd.vconsole.keymap does not accept compound/multi-layout formats.
   if [[ -n "${OSI_KEYBOARD_LAYOUT:-}" ]]; then
-    cmdline="${cmdline} rd.vconsole.keymap=${OSI_KEYBOARD_LAYOUT}"
+    local x11_layouts x11_model x11_variant x11_options vconsole_map
+    parse_keyboard_layout "${OSI_KEYBOARD_LAYOUT}"
+    cmdline="${cmdline} rd.vconsole.keymap=${vconsole_map}"
   fi
 
   # For resume settings, choose the appropriate UUID.
   local resume_uuid
   if [[ "${OSI_USE_ENCRYPTION:-}" == "1" ]]; then
-    resume_uuid="${luks_uuid}"
+    resume_uuid="${LUKS_UUID}"
   else
     resume_uuid="${fs_uuid}"
   fi
 
   # If a swapfile exists, determine its offset and append resume parameters.
   if run_in_target "[ -f /swap/swapfile ]"; then
-    local swap_offset
-    swap_offset=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile | awk '{print \$NF}'" | tr -d '\n')
-    cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
+    local swap_offset btrfs_out
+    btrfs_out=$(run_in_target "btrfs inspect-internal map-swapfile -r /swap/swapfile 2>/dev/null || echo ''" | tr -d '\n')
+    # Try parsing "resume_offset: <num>" first (new btrfs-progs), fallback to last numeric field
+    swap_offset=$(
+      echo "$btrfs_out" \
+      | awk -F'[: \t]+' '/resume_offset/ {print $2; found=1} END {if (!found) exit 1}' 2>/dev/null \
+      || echo "$btrfs_out" | awk 'NF {last=$NF} END {print last+0}' 2>/dev/null \
+      || echo ""
+    )
+    if [[ -n "$swap_offset" && "$swap_offset" != "0" ]]; then
+      cmdline+=" resume=UUID=${resume_uuid} resume_offset=${swap_offset}"
+    else
+      log_warn "Swapfile exists but failed to determine valid swap offset — resume will not be configured"
+    fi
   fi
 
   # Determine which cmdline file to update.
@@ -800,6 +984,7 @@ main() {
   generate_mok_keys_target
   install_secureboot_components_target
   move_keyfile_to_systemd
+  detect_luks_uuid
   generate_crypttab_target
   crypt_dracut_conf
 
