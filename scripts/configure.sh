@@ -600,8 +600,34 @@ generate_mok_keys_target() {
   if run_in_target "test -f /etc/secureboot/keys/MOK.key && \
                     test -f /etc/secureboot/keys/MOK.crt && \
                     test -f /etc/secureboot/keys/MOK.der" 2>/dev/null; then
-    log_info "Build-time MOK keys present — skipping generation"
-    return 0
+    log_info "Build-time MOK keys present — validating keypair and MOK.der"
+
+    # Verify MOK.key and MOK.crt are a matching keypair.
+    # A mismatch causes sbsign to fail deep in dracut with an opaque OpenSSL error.
+    local key_pub cert_pub
+    key_pub=$(run_in_target  "openssl rsa  -in /etc/secureboot/keys/MOK.key -pubout 2>/dev/null | openssl md5 | awk '{print \$2}'" 2>/dev/null || true)
+    cert_pub=$(run_in_target "openssl x509 -in /etc/secureboot/keys/MOK.crt -pubkey -noout 2>/dev/null | openssl md5 | awk '{print \$2}'" 2>/dev/null || true)
+    if [[ -z "$key_pub" || -z "$cert_pub" || "$key_pub" != "$cert_pub" ]]; then
+      log_warn "MOK.key/MOK.crt keypair mismatch or unreadable (key=$key_pub cert=$cert_pub) — regenerating all MOK keys"
+      run_in_target "rm -f /etc/secureboot/keys/MOK.key /etc/secureboot/keys/MOK.crt /etc/secureboot/keys/MOK.der"
+    else
+      log_info "MOK keypair validated (fingerprint: $key_pub)"
+
+      # Validate MOK.der — regenerate from MOK.crt if corrupt or missing.
+      # mokutil rejects an invalid DER with:
+      #   "Abort!!! ... is not a valid x509 certificate in DER format"
+      if ! run_in_target "openssl x509 -in /etc/secureboot/keys/MOK.der -inform DER -noout" &>/dev/null 2>&1; then
+        log_warn "MOK.der is missing or not a valid DER certificate — regenerating from MOK.crt"
+        run_in_target "openssl x509 -in /etc/secureboot/keys/MOK.crt -outform DER \
+          -out /etc/secureboot/keys/MOK.der" \
+          || die "Failed to regenerate MOK.der from MOK.crt"
+        log_info "MOK.der regenerated"
+      else
+        log_info "MOK.der is valid"
+      fi
+
+      return 0
+    fi
   fi
 
   log_warn "MOK keys not found — generating new keys (image EFI binaries will be re-signed)"
@@ -687,7 +713,7 @@ detect_luks_uuid() {
   fi
   log_info "Detecting LUKS UUID for /dev/mapper/${ROOTLABEL}"
   local underlying
-  underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: //p'" | tr -d '\n')
+  underlying=$(run_in_target "cryptsetup status /dev/mapper/${ROOTLABEL} | sed -n 's/^ *device: *//p'" | tr -d '\n' | xargs | awk '{print $NF}')
   if [[ -z "$underlying" ]]; then
     die "Failed to determine underlying device for /dev/mapper/${ROOTLABEL}"
   fi

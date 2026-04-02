@@ -283,8 +283,10 @@ create_filesystems() {
 
   # Set up encryption on the root partition if requested.
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
-    log_info "Setting up LUKS encryption on ${ROOT_PARTITION}"
-    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat "${ROOT_PARTITION}" || exit 1
+    log_info "Setting up LUKS encryption on ${ROOT_PARTITION} (argon2id KDF)"
+    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat \
+      --pbkdf argon2id \
+      "${ROOT_PARTITION}" || exit 1
     echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
