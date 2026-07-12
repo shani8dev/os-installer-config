@@ -310,15 +310,14 @@ setup_hostname_target() {
 #   x11_options  — comma-separated option list  (e.g. "grp:alt_shift_toggle")
 #   vconsole_map — single keymap for TTY / vconsole.conf (first layout, no variant)
 #
-# Supported input formats (can be combined):
+# Supported input formats (comma joins independent layouts; '+' attaches a
+# variant, or an x11 option if it matches a known option-group keyword):
 #   Simple       "us"                  → layouts=us
-#   Variant      "us:dvorak"           → layouts=us  variant=dvorak
-#   Multi        "us,in"               → layouts=us,in          (auto-adds toggle option)
-#   Plus-multi   "in+eng"              → layouts=in,eng          (auto-adds toggle option)
+#   Variant      "de+nodeadkeys"       → layouts=de  variant=nodeadkeys
+#   Multi        "us,in"               → layouts=us,in           (auto-adds toggle option)
+#   Multi+variant "in+eng,us"          → layouts=in,us  variant=eng,  (auto-adds toggle option)
 #   Plus-option  "us+grp:caps_toggle"  → layouts=us  options+=grp:caps_toggle
-#   Mixed        "in:hin+eng"          → layouts=in,eng variant=hin,
-#   Triple       "in+hin+eng"          → layouts=in,hin,eng      (auto-adds toggle option)
-#   Full         "in:hin+eng+grp:win"  → layouts=in,eng variant=hin, options+=grp:win
+#   Full         "in+eng+grp:win"      → layouts=in  variant=eng  options+=grp:win
 parse_keyboard_layout() {
   local raw="$1"
   x11_layouts=""
@@ -327,55 +326,43 @@ parse_keyboard_layout() {
   x11_options=""
   vconsole_map=""
 
-  # Split on '+' to get tokens; each token is either:
-  #   a) a layout[:variant] token  — does NOT contain ':'  OR contains ':' but left side
-  #      is a known short layout code (2–3 chars, no underscore) and right side has no '='
-  #   b) an x11 option             — contains ':' and right side contains letters (grp:foo)
-  #
-  # Strategy: iterate tokens. If a token looks like an option (contains ':' and the left
-  # side looks like an option group name: grp, ctrl, caps, lv3, compose, terminate, etc.),
-  # treat it as an option. Otherwise treat it as layout[:variant].
-
-  local raw_tokens
-  IFS='+' read -ra raw_tokens <<< "$raw"
-
-  local layout_tokens=()
-  local option_tokens=()
-
+  # os-installer's frontend (keyboard_layout_provider.py) sources layout IDs from
+  # GNOME's XkbInfo / org.gnome.desktop.input-sources, whose convention is
+  # "layout" or "layout+variant" — a SINGLE layout with at most ONE variant,
+  # joined by '+' (e.g. "de+nodeadkeys", "fr+oss", "in+eng"). It never emits
+  # multiple stacked layouts and never uses ':'. Comma is still honored here
+  # for any caller that pre-builds a genuine multi-layout string (e.g. "us,in").
   local option_groups="grp|ctrl|caps|lv3|lv5|compose|terminate|numpad|kpdl|nbsp|f|shift|ibus"
 
-  for token in "${raw_tokens[@]}"; do
-    if [[ "$token" == *":"* ]]; then
-      local lhs="${token%%:*}"
-      # If the left-hand side matches a known option group, it's an x11 option
-      if [[ "$lhs" =~ ^(${option_groups})$ ]]; then
-        option_tokens+=("$token")
-      else
-        # It's a layout:variant token
-        layout_tokens+=("$token")
-      fi
-    else
-      # No colon — plain layout name (e.g. "us", "in", "eng")
-      layout_tokens+=("$token")
-    fi
-  done
+  local comma_groups
+  IFS=',' read -ra comma_groups <<< "$raw"
 
-  # Also handle pre-comma-separated layouts passed directly (e.g. "us,in")
-  # Flatten layout_tokens through comma splitting
   local all_layouts=()
   local all_variants=()
-  for token in "${layout_tokens[@]}"; do
-    # Each token may itself be comma-separated (e.g. "us,in" passed as a single token)
-    IFS=',' read -ra sub_tokens <<< "$token"
-    for sub in "${sub_tokens[@]}"; do
-      if [[ "$sub" == *":"* ]]; then
-        all_layouts+=("${sub%%:*}")
-        all_variants+=("${sub##*:}")
-      else
-        all_layouts+=("$sub")
-        all_variants+=("")   # empty variant placeholder to keep arrays aligned
+  local option_tokens=()
+
+  for group in "${comma_groups[@]}"; do
+    local plus_tokens
+    IFS='+' read -ra plus_tokens <<< "$group"
+
+    local layout="${plus_tokens[0]}"
+    local variant=""
+
+    for token in "${plus_tokens[@]:1}"; do
+      if [[ "$token" == *":"* ]]; then
+        local lhs="${token%%:*}"
+        if [[ "$lhs" =~ ^(${option_groups})$ ]]; then
+          option_tokens+=("$token")
+          continue
+        fi
       fi
+      # Anything else after the first '+' is THIS layout's variant, not a
+      # new layout (matches the layout+variant convention above).
+      variant="${variant:+${variant},}${token}"
     done
+
+    all_layouts+=("$layout")
+    all_variants+=("$variant")
   done
 
   # Build x11_layouts and x11_variant as comma-separated strings
