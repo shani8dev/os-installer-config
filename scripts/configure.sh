@@ -281,8 +281,16 @@ mount_overlay() {
 
 # Function: run_in_target
 # Execute a command in the mounted target environment.
+#
+# Any extra arguments after the command string are passed through untouched
+# as $1, $2, ... inside the chroot's bash -c — they are never re-parsed as
+# shell syntax, so this is the safe way to pass installer-provided values
+# (e.g. OSI_USER_NAME) into a command instead of interpolating them directly
+# into the command string, which would let a value containing a quote break
+# out of its intended context and inject arbitrary commands.
 run_in_target() {
-  sudo chroot "${TARGET}" /bin/bash -c "$1"
+  local cmd="$1"; shift
+  sudo chroot "${TARGET}" /bin/bash -c "$cmd" _ "$@"
 }
 
 # Function: setup_machine_id_target
@@ -480,15 +488,22 @@ setup_user_target() {
     local groups_str="wheel${extra_groups:+,${extra_groups}}"
 
     # Ensure every group exists before useradd — some may be absent on minimal profiles.
+    # groups_str is built from /etc/shani-extra-groups (a fixed system file), not
+    # installer input, but every value here is passed as a real positional argument
+    # regardless — never interpolated into shell syntax.
     IFS=',' read -ra groups_arr <<< "$groups_str"
     for group in "${groups_arr[@]}"; do
-      if ! run_in_target "getent group ${group} >/dev/null 2>&1"; then
-        run_in_target "groupadd ${group}" || log_warn "Failed to create group ${group}"
+      if ! run_in_target 'getent group "$1" >/dev/null 2>&1' "$group"; then
+        run_in_target 'groupadd "$1"' "$group" || log_warn "Failed to create group ${group}"
       fi
     done
 
     # Call useradd via the ShaniOS wrapper so group-merging logic is consistent.
-    run_in_target "PATH=/usr/local/bin:\$PATH useradd -m -s /bin/zsh -G '${groups_str}' '${OSI_USER_NAME}'" \
+    # OSI_USER_NAME is installer-provided (free-text) — pass it as a real
+    # positional argument, not interpolated into the command string, so a
+    # value containing a quote can't break out and inject commands.
+    run_in_target 'PATH=/usr/local/bin:$PATH useradd -m -s /bin/zsh -G "$1" "$2"' \
+      "$groups_str" "$OSI_USER_NAME" \
       || die "User creation failed"
 
     if [ -n "${OSI_USER_PASSWORD:-}" ]; then
@@ -505,28 +520,32 @@ setup_user_target() {
 # Function: setup_autologin_target
 setup_autologin_target() {
   if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_NAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" == "1" ]; then
+    # OSI_USER_NAME is installer-provided (free-text) — every branch below passes
+    # it as a real positional argument ($1 inside the chroot), never interpolated
+    # into the command string, so a value containing a quote can't break out and
+    # inject commands.
     if run_in_target "command -v gdm >/dev/null"; then
       log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
-      run_in_target "mkdir -p /etc/gdm && printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${OSI_USER_NAME}\n' > /etc/gdm/custom.conf"
+      run_in_target 'mkdir -p /etc/gdm && printf "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=%s\n" "$1" > /etc/gdm/custom.conf' "$OSI_USER_NAME"
     elif run_in_target "command -v sddm >/dev/null"; then
       log_info "Configuring SDDM autologin for ${OSI_USER_NAME}"
-      run_in_target "mkdir -p /etc/sddm.conf.d && printf '[Autologin]\nUser=${OSI_USER_NAME}\nSession=plasma\n' > /etc/sddm.conf.d/autologin.conf"
+      run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_NAME"
     elif run_in_target "command -v greetd >/dev/null"; then
       log_info "Configuring greetd autologin for ${OSI_USER_NAME}"
-      run_in_target "if [ -f /etc/greetd/config.toml ]; then \
-          sed -i 's/^user *= *.*/user = \"${OSI_USER_NAME}\"/' /etc/greetd/config.toml; \
-        else \
-          echo -e '[autologin]\nuser = \"${OSI_USER_NAME}\"' > /etc/greetd/config.toml; \
-        fi"
+      run_in_target 'if [ -f /etc/greetd/config.toml ]; then
+          sed -i "s/^user *= *.*/user = \"$1\"/" /etc/greetd/config.toml
+        else
+          printf "[autologin]\nuser = \"%s\"\n" "$1" > /etc/greetd/config.toml
+        fi' "$OSI_USER_NAME"
     elif run_in_target "command -v lightdm >/dev/null"; then
       log_info "Configuring LightDM autologin for ${OSI_USER_NAME}"
-      run_in_target "sed -i 's/^#*autologin-user=.*/autologin-user=${OSI_USER_NAME}/' /etc/lightdm/lightdm.conf"
+      run_in_target 'sed -i "s/^#*autologin-user=.*/autologin-user=$1/" /etc/lightdm/lightdm.conf' "$OSI_USER_NAME"
     elif run_in_target "command -v lxdm >/dev/null"; then
       log_info "Configuring LXDM autologin for ${OSI_USER_NAME}"
-      run_in_target "sed -i 's/^#*autologin=.*/autologin=${OSI_USER_NAME}/' /etc/lxdm/lxdm.conf"
+      run_in_target 'sed -i "s/^#*autologin=.*/autologin=$1/" /etc/lxdm/lxdm.conf' "$OSI_USER_NAME"
     else
       log_info "Configuring getty autologin for ${OSI_USER_NAME}"
-      run_in_target "mkdir -p /etc/systemd/system/getty@tty1.service.d && printf '[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin ${OSI_USER_NAME} --noclear %%I \$TERM\n' > /etc/systemd/system/getty@tty1.service.d/autologin.conf"
+      run_in_target 'mkdir -p /etc/systemd/system/getty@tty1.service.d && printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n" "$1" > /etc/systemd/system/getty@tty1.service.d/autologin.conf' "$OSI_USER_NAME"
     fi
   else
     log_info "Autologin not enabled or required variables not provided, skipping autologin configuration."
