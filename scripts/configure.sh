@@ -425,12 +425,16 @@ setup_keyboard_target() {
 
     log_info "Parsed keyboard: layouts='${x11_layouts}' variant='${x11_variant}' options='${x11_options}' vconsole='${vconsole_map}'"
 
-    # Apply TTY / console keymap (single layout only)
-    run_in_target "echo \"KEYMAP=${vconsole_map}\" > /etc/vconsole.conf && localectl set-keymap '${vconsole_map}'" \
+    # Apply TTY / console keymap (single layout only). Values are parsed from
+    # installer-provided OSI_KEYBOARD_LAYOUT, so pass them as real positional
+    # arguments rather than interpolating into the command string.
+    run_in_target 'echo "KEYMAP=$1" > /etc/vconsole.conf && localectl set-keymap "$1"' \
+      "$vconsole_map" \
       || log_warn "Failed to set console keymap to '${vconsole_map}'"
 
     # Apply X11 keymap (full localectl call with all four fields)
-    run_in_target "localectl set-x11-keymap '${x11_layouts}' '${x11_model}' '${x11_variant}' '${x11_options}'" \
+    run_in_target 'localectl set-x11-keymap "$1" "$2" "$3" "$4"' \
+      "$x11_layouts" "$x11_model" "$x11_variant" "$x11_options" \
       || log_warn "Failed to set X11 keymap: layouts='${x11_layouts}' variant='${x11_variant}' options='${x11_options}'"
   else
     log_info "Keyboard layout variable not provided or set to 'none', skipping keyboard configuration."
@@ -441,7 +445,7 @@ setup_keyboard_target() {
 setup_locale_target() {
   if [ -n "${OSI_LOCALE:-}" ] && [ "${OSI_LOCALE,,}" != "none" ]; then
     log_info "Configuring locale to ${OSI_LOCALE}"
-    run_in_target "echo \"LANG=${OSI_LOCALE}\" > /etc/locale.conf && localectl set-locale LANG='${OSI_LOCALE}'"
+    run_in_target 'echo "LANG=$1" > /etc/locale.conf && localectl set-locale LANG="$1"' "$OSI_LOCALE"
   else
     log_info "Locale variable not provided or set to 'none', skipping locale configuration."
   fi
@@ -453,7 +457,12 @@ setup_locale_target() {
 setup_formats_target() {
   if [ -n "${OSI_FORMATS:-}" ] && [ "${OSI_FORMATS,,}" != "none" ]; then
     log_info "Configuring formats: ${OSI_FORMATS}"
-    run_in_target "localectl set-locale ${OSI_FORMATS}"
+    # OSI_FORMATS is a bare locale (e.g. "de_DE.UTF-8"), but `localectl
+    # set-locale` requires VARIABLE=value assignments — apply it to the
+    # regional formatting categories, distinct from the interface language
+    # (OSI_LOCALE/LANG). Passed as a positional argument to avoid injection.
+    run_in_target 'localectl set-locale LC_TIME="$1" LC_NUMERIC="$1" LC_MONETARY="$1" LC_MEASUREMENT="$1" LC_PAPER="$1"' \
+      "$OSI_FORMATS"
   else
     log_info "Formats variable not provided or set to 'none', skipping formats configuration."
   fi
@@ -463,7 +472,8 @@ setup_formats_target() {
 setup_timezone_target() {
   if [ -n "${OSI_TIMEZONE:-}" ] && [ "${OSI_TIMEZONE,,}" != "none" ]; then
     log_info "Setting timezone to ${OSI_TIMEZONE}"
-    run_in_target "ln -sf \"/usr/share/zoneinfo/${OSI_TIMEZONE}\" /etc/localtime && echo '${OSI_TIMEZONE}' > /etc/timezone && timedatectl set-timezone '${OSI_TIMEZONE}'"
+    run_in_target 'ln -sf "/usr/share/zoneinfo/$1" /etc/localtime && echo "$1" > /etc/timezone && timedatectl set-timezone "$1"' \
+      "$OSI_TIMEZONE"
   else
     log_info "Timezone variable not provided or set to 'none', skipping timezone configuration."
   fi
@@ -471,8 +481,12 @@ setup_timezone_target() {
 
 # Function: setup_user_target
 setup_user_target() {
-  if [ -n "${OSI_USER_NAME:-}" ]; then
-    log_info "Creating primary user: ${OSI_USER_NAME}"
+  # OSI_USER_NAME is the free-text display name; OSI_USER_USERNAME is the
+  # sanitized Unix login name (either explicitly entered or auto-generated
+  # by the installer from the display name) — useradd needs the latter, a
+  # raw display name (spaces, uppercase, unicode) would make useradd fail.
+  if [ -n "${OSI_USER_NAME:-}" ] && [ -n "${OSI_USER_USERNAME:-}" ]; then
+    log_info "Creating primary user: ${OSI_USER_NAME} (${OSI_USER_USERNAME})"
 
     # Read the canonical group list from the image — single source of truth
     # shared with shani-user-setup and the useradd/adduser wrappers.
@@ -499,15 +513,15 @@ setup_user_target() {
     done
 
     # Call useradd via the ShaniOS wrapper so group-merging logic is consistent.
-    # OSI_USER_NAME is installer-provided (free-text) — pass it as a real
-    # positional argument, not interpolated into the command string, so a
-    # value containing a quote can't break out and inject commands.
+    # OSI_USER_USERNAME is installer-provided — pass it as a real positional
+    # argument, not interpolated into the command string, so a value
+    # containing a quote can't break out and inject commands.
     run_in_target 'PATH=/usr/local/bin:$PATH useradd -m -s /bin/zsh -G "$1" "$2"' \
-      "$groups_str" "$OSI_USER_NAME" \
+      "$groups_str" "$OSI_USER_USERNAME" \
       || die "User creation failed"
 
     if [ -n "${OSI_USER_PASSWORD:-}" ]; then
-      printf "%s:%s" "${OSI_USER_NAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" \
+      printf "%s:%s" "${OSI_USER_USERNAME}" "${OSI_USER_PASSWORD}" | run_in_target "chpasswd" \
         || die "Failed to set user password"
     else
       log_warn "No user password provided, user account created without a password."
@@ -519,33 +533,33 @@ setup_user_target() {
 
 # Function: setup_autologin_target
 setup_autologin_target() {
-  if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_NAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" == "1" ]; then
-    # OSI_USER_NAME is installer-provided (free-text) — every branch below passes
-    # it as a real positional argument ($1 inside the chroot), never interpolated
-    # into the command string, so a value containing a quote can't break out and
-    # inject commands.
+  if [ -n "${OSI_USER_AUTOLOGIN:-}" ] && [ -n "${OSI_USER_USERNAME:-}" ] && [ "${OSI_USER_AUTOLOGIN}" == "1" ]; then
+    # OSI_USER_USERNAME is the sanitized Unix login name (see setup_user_target)
+    # — every branch below passes it as a real positional argument ($1 inside
+    # the chroot), never interpolated into the command string, so a value
+    # containing a quote can't break out and inject commands.
     if run_in_target "command -v gdm >/dev/null"; then
-      log_info "Configuring GDM autologin for ${OSI_USER_NAME}"
-      run_in_target 'mkdir -p /etc/gdm && printf "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=%s\n" "$1" > /etc/gdm/custom.conf' "$OSI_USER_NAME"
+      log_info "Configuring GDM autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'mkdir -p /etc/gdm && printf "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=%s\n" "$1" > /etc/gdm/custom.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v sddm >/dev/null"; then
-      log_info "Configuring SDDM autologin for ${OSI_USER_NAME}"
-      run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_NAME"
+      log_info "Configuring SDDM autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v greetd >/dev/null"; then
-      log_info "Configuring greetd autologin for ${OSI_USER_NAME}"
+      log_info "Configuring greetd autologin for ${OSI_USER_USERNAME}"
       run_in_target 'if [ -f /etc/greetd/config.toml ]; then
           sed -i "s/^user *= *.*/user = \"$1\"/" /etc/greetd/config.toml
         else
           printf "[autologin]\nuser = \"%s\"\n" "$1" > /etc/greetd/config.toml
-        fi' "$OSI_USER_NAME"
+        fi' "$OSI_USER_USERNAME"
     elif run_in_target "command -v lightdm >/dev/null"; then
-      log_info "Configuring LightDM autologin for ${OSI_USER_NAME}"
-      run_in_target 'sed -i "s/^#*autologin-user=.*/autologin-user=$1/" /etc/lightdm/lightdm.conf' "$OSI_USER_NAME"
+      log_info "Configuring LightDM autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'sed -i "s/^#*autologin-user=.*/autologin-user=$1/" /etc/lightdm/lightdm.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v lxdm >/dev/null"; then
-      log_info "Configuring LXDM autologin for ${OSI_USER_NAME}"
-      run_in_target 'sed -i "s/^#*autologin=.*/autologin=$1/" /etc/lxdm/lxdm.conf' "$OSI_USER_NAME"
+      log_info "Configuring LXDM autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'sed -i "s/^#*autologin=.*/autologin=$1/" /etc/lxdm/lxdm.conf' "$OSI_USER_USERNAME"
     else
-      log_info "Configuring getty autologin for ${OSI_USER_NAME}"
-      run_in_target 'mkdir -p /etc/systemd/system/getty@tty1.service.d && printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n" "$1" > /etc/systemd/system/getty@tty1.service.d/autologin.conf' "$OSI_USER_NAME"
+      log_info "Configuring getty autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'mkdir -p /etc/systemd/system/getty@tty1.service.d && printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n" "$1" > /etc/systemd/system/getty@tty1.service.d/autologin.conf' "$OSI_USER_USERNAME"
     fi
   else
     log_info "Autologin not enabled or required variables not provided, skipping autologin configuration."
