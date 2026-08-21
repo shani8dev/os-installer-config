@@ -154,7 +154,7 @@ check_env() {
   local missing_vars=()
   local required_vars=(OSI_DEVICE_PATH OSI_DEVICE_IS_PARTITION OSI_USE_ENCRYPTION)
   if [[ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]]; then
-    if [[ -z "${OSI_DEVICE_EFI_PARTITION+x}" ]]; then
+    if [[ -z "${OSI_DEVICE_EFI_PARTITION:-}" ]]; then
       log_warn "OSI_DEVICE_EFI_PARTITION is not set. Will be assuming 1st partition as EFI."
     fi
   fi
@@ -256,8 +256,23 @@ do_partitioning() {
     sudo parted --script "${OSI_DEVICE_PATH}" set 1 esp on || log_warn "Could not set esp flag on partition 1"
   else
     log_info "Using pre-partitioned device."
-    # Use provided EFI partition; normalize if it is a simple number.
-    EFI_PARTITION=$(normalize_partition "${OSI_DEVICE_EFI_PARTITION:-1}")
+    if [[ -z "${OSI_DEVICE_EFI_PARTITION:-}" ]]; then
+      # No EFI partition given. PARTITION_PREFIX is empty in this branch (it's
+      # only derived for whole-disk installs), so normalize_partition("1")
+      # would return the bare string "1", not a device path — derive the
+      # sibling EFI partition from the chosen root partition's own disk instead.
+      if [[ "${OSI_DEVICE_PATH}" =~ ^(/dev/nvme[0-9]+n[0-9]+|/dev/mmcblk[0-9]+)p[0-9]+$ ]]; then
+        EFI_PARTITION="${BASH_REMATCH[1]}p1"
+      elif [[ "${OSI_DEVICE_PATH}" =~ ^(/dev/[a-z]+)[0-9]+$ ]]; then
+        EFI_PARTITION="${BASH_REMATCH[1]}1"
+      else
+        log_error "OSI_DEVICE_EFI_PARTITION not set and could not derive an EFI partition from ${OSI_DEVICE_PATH}"
+        exit 1
+      fi
+      log_warn "OSI_DEVICE_EFI_PARTITION not set — assuming ${EFI_PARTITION} is the EFI partition."
+    else
+      EFI_PARTITION=$(normalize_partition "${OSI_DEVICE_EFI_PARTITION}")
+    fi
     ROOT_PARTITION="${OSI_DEVICE_PATH}"
   fi
   log_info "EFI partition: ${EFI_PARTITION}"
