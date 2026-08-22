@@ -405,15 +405,17 @@ parse_keyboard_layout() {
 #   - /etc/vconsole.conf + localectl set-keymap  for TTY (primary layout only)
 #   - localectl set-x11-keymap for X11 (full multi-layout + variant + options)
 #
-# Supported OSI_KEYBOARD_LAYOUT formats:
-#   "us"                  simple single layout
-#   "us:dvorak"           layout with variant
-#   "us,in"              pre-comma-separated multi-layout
-#   "in+eng"             plus-separated multi-layout  (→ in,eng  grp:alt_shift_toggle)
-#   "us+grp:caps_toggle" layout with explicit x11 option
-#   "in:hin+eng"         primary layout+variant, secondary layout
-#   "in+hin+eng"         three-way layout toggle
-#   "in:hin+eng+grp:win" full compound: layout:variant + extra layout + option
+# OSI_KEYBOARD_LAYOUT, as actually sent by os-installer's GTK frontend
+# (verified against upstream's keyboard_layout_provider.py / envvar_creator.py),
+# is always a SINGLE layout, optionally with ONE '+variant' suffix — e.g. "us",
+# "de+nodeadkeys", "in+eng". It never contains ':' and never stacks multiple
+# layouts or x11 options; the picker UI has no concept of either.
+#
+# parse_keyboard_layout() also accepts comma-joined multi-layout and explicit
+# "+grp:*" x11-option tokens as a defensive superset, for any caller other
+# than the stock GTK frontend that pre-builds such a string directly (e.g. a
+# hand-authored config.yaml override). Those forms are not produced by
+# upstream today.
 setup_keyboard_target() {
   if [ -n "${OSI_KEYBOARD_LAYOUT:-}" ] && [ "${OSI_KEYBOARD_LAYOUT,,}" != "none" ]; then
     log_info "Configuring keyboard layout: ${OSI_KEYBOARD_LAYOUT}"
