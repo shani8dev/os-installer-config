@@ -89,7 +89,7 @@ def write_pot_header(pot_file):
 
 try:
     with open(args.config_path, 'r') as config_file:
-        config = yaml.load(config_file, Loader=yaml.Loader)
+        config = yaml.load(config_file, Loader=yaml.SafeLoader)
 
     po_folder = args.config_path.parent / 'po'
     po_folder.mkdir(exist_ok=True)

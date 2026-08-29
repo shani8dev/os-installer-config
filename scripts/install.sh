@@ -42,12 +42,42 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
-trap 'echo "[INSTALL][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
 
 # Logging functions for consistent messaging
 log_info() { echo "[INSTALL][INFO] $*"; }
 log_warn() { echo "[INSTALL][WARN] $*" >&2; }
 log_error() { echo "[INSTALL][ERROR] $*" >&2; }
+die() { log_error "$*"; run_cleanup_stack; exit 1; }
+
+# --- Cleanup stack for unwinding mounts/mapper devices on failure ----------
+# Every mount (and cryptsetup open) performed by this script pushes its own
+# undo command here immediately on success (see mount_tracked() below). On
+# any die()/ERR-trap failure, run_cleanup_stack() unwinds everything *this
+# run* actually set up, in reverse (LIFO) order — since mounts/opens are
+# pushed in the same chronological order they were created, unwinding in
+# reverse naturally unmounts children before parents, and closes the LUKS
+# mapper only after whatever was mounted on top of it is gone. A normal
+# successful exit never calls this — install.sh intentionally leaves /mnt
+# mounted (and the mapper open) for configure.sh to build on next.
+declare -a _CLEANUP_STACK=()
+_push_cleanup() { _CLEANUP_STACK+=("$1"); }
+run_cleanup_stack() {
+  local i
+  for (( i=${#_CLEANUP_STACK[@]}-1; i>=0; i-- )); do
+    log_warn "Cleanup: ${_CLEANUP_STACK[i]}"
+    eval "${_CLEANUP_STACK[i]}" || true
+  done
+  _CLEANUP_STACK=()
+}
+# Run a mount command; on success, remember how to undo it.
+#   mount_tracked <mountpoint-to-unmount-on-cleanup> <mount command...>
+mount_tracked() {
+  local mountpoint="$1"; shift
+  "$@" || return 1
+  _push_cleanup "sudo umount -R '${mountpoint}' 2>/dev/null || sudo umount -Rl '${mountpoint}' 2>/dev/null || true"
+}
+
+trap 'ec=$?; echo "[INSTALL][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; run_cleanup_stack; exit "$ec"' ERR
 
 # --- Improved Function: get_efi_disk_info ---
 # Better logic to derive disk and partition number from EFI partition path
@@ -140,8 +170,8 @@ create_efi_boot_entry() {
 }
 
 # Check for required commands.
-for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted; do
-  command -v "$cmd" &>/dev/null || { log_error "Required command '$cmd' not found."; exit 1; }
+for cmd in sudo sfdisk mkfs.fat cryptsetup mkfs.btrfs mount btrfs zstd swapon free awk parted mktemp shred; do
+  command -v "$cmd" &>/dev/null || die "Required command '$cmd' not found."
 done
 
 # efibootmgr is optional - only warn if not available
@@ -190,8 +220,8 @@ SWAPFILE_PATH="@swap/swapfile"  # Under the @swap subvolume
 SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
 
 # Pre-check critical files
-[[ ! -f "${PART_LAYOUT}" ]] && { log_error "Partition layout file not found at ${PART_LAYOUT}"; exit 1; }
-[[ ! -f "${ROOTFSZST_SOURCE}" ]] && { log_error "System image not found at ${ROOTFSZST_SOURCE}"; exit 1; }
+[[ ! -f "${PART_LAYOUT}" ]] && die "Partition layout file not found at ${PART_LAYOUT}"
+[[ ! -f "${ROOTFSZST_SOURCE}" ]] && die "System image not found at ${ROOTFSZST_SOURCE}"
 [[ ! -f "${FLATPAKFS_SOURCE}" ]] && log_info "Flatpak image not found at ${FLATPAKFS_SOURCE} — Flatpak install will be skipped."
 [[ ! -f "${SNAPFS_SOURCE}" ]] && log_info "Snap image not found at ${SNAPFS_SOURCE} — Snap install will be skipped."
 
@@ -230,7 +260,7 @@ extract_image() {
   local dest="$2"
   log_info "Extracting image from ${src} into ${dest}"
   sudo zstd -d --long=31 -T0 "${src}" -c | sudo btrfs receive "${dest}" \
-    || { log_error "Image extraction from ${src} failed"; exit 1; }
+    || die "Image extraction from ${src} failed"
 }
 
 log_info "Starting disk setup..."
@@ -244,7 +274,7 @@ do_partitioning() {
 
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
-    sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || { log_error "Disk partitioning failed"; exit 1; }
+    sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || die "Disk partitioning failed"
     sudo partprobe "${OSI_DEVICE_PATH}" || true
     sudo udevadm settle
     # For whole disk, derive partitions: Partition 1 (EFI), Partition 2 (root).
@@ -284,8 +314,8 @@ do_partitioning() {
 mount_boot_partition() {
   local efi_device="$1"
   log_info "Mounting EFI partition (${efi_device}) at /mnt/boot/efi"
-  sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" /mnt/boot/efi \
-    || { log_error "EFI partition mount failed"; exit 1; }
+  mount_tracked /mnt/boot/efi sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" /mnt/boot/efi \
+    || die "EFI partition mount failed"
 }
 
 # Function: create_filesystems
@@ -293,30 +323,64 @@ mount_boot_partition() {
 create_filesystems() {
   # Format and mount the EFI partition using the global EFI_PARTITION variable.
   log_info "Formatting EFI partition (${EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
-  sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || { log_error "EFI partition formatting failed"; exit 1; }
+  sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || die "EFI partition formatting failed"
   mount_boot_partition "${EFI_PARTITION}"
 
   # Set up encryption on the root partition if requested.
   if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
     log_info "Setting up LUKS encryption on ${ROOT_PARTITION} (argon2id KDF)"
-    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup -q luksFormat \
-      --pbkdf argon2id \
-      "${ROOT_PARTITION}" || exit 1
-    echo "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup open "${ROOT_PARTITION}" "${ROOTLABEL}" || exit 1
+
+    # Write the passphrase to a private (mode 600, mktemp-created) temp file
+    # instead of piping it through `echo`. `echo "$PIN" | cryptsetup ...`
+    # spawns a sibling `echo` process whose argv — and therefore the
+    # passphrase — is visible to any local user via `ps aux` /
+    # /proc/<pid>/cmdline for as long as that process runs, and again in any
+    # `set -x` trace. cryptsetup's own argv never contains the secret either
+    # way; --key-file=<path> keeps it out of every process's argv entirely.
+    # mktemp creates the file with mode 0600 up front (no window where a
+    # broader mode is briefly in effect); chmod again defensively.
+    local luks_key_file
+    luks_key_file=$(mktemp) || die "Failed to create temporary LUKS key file"
+    chmod 600 "${luks_key_file}"
+
+    # Writing the passphrase as a literal argument (even to a builtin like
+    # printf) is still shown verbatim by `set -x`/BASH_XTRACEFD — xtrace
+    # prints a simple command's expanded words regardless of whether the
+    # command is a builtin or external, so this alone wouldn't close that
+    # leak vector. Suspend xtrace for this one assignment (restoring it
+    # immediately after) so the plaintext passphrase is never written to the
+    # trace stream even if the caller invoked this script with -x.
+    case $- in *x*) _oic_had_xtrace=1 ;; *) _oic_had_xtrace=0 ;; esac
+    set +x
+    printf '%s' "${OSI_ENCRYPTION_PIN}" > "${luks_key_file}"
+    [[ "${_oic_had_xtrace}" -eq 1 ]] && set -x
+    unset _oic_had_xtrace
+
+    if ! sudo cryptsetup -q luksFormat --pbkdf argon2id --key-file="${luks_key_file}" "${ROOT_PARTITION}"; then
+      shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
+      die "LUKS format failed on ${ROOT_PARTITION}"
+    fi
+    if ! sudo cryptsetup open --key-file="${luks_key_file}" "${ROOT_PARTITION}" "${ROOTLABEL}"; then
+      shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
+      die "LUKS open failed on ${ROOT_PARTITION}"
+    fi
+    _push_cleanup "sudo cryptsetup close '${ROOTLABEL}' 2>/dev/null || true"
+    shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
+
     BTRFS_TARGET="/dev/mapper/${ROOTLABEL}"
   else
     BTRFS_TARGET="${ROOT_PARTITION}"
   fi
 
   log_info "Creating Btrfs filesystem on ${BTRFS_TARGET} with label ${ROOTLABEL}"
-  sudo mkfs.btrfs -f -L "${ROOTLABEL}" "${BTRFS_TARGET}" || { log_error "Btrfs filesystem creation failed"; exit 1; }
+  sudo mkfs.btrfs -f -L "${ROOTLABEL}" "${BTRFS_TARGET}" || die "Btrfs filesystem creation failed"
 }
 
 # Function: mount_top_level
 # Mount the newly created Btrfs filesystem at /mnt with the given options.
 mount_top_level() {
   log_info "Mounting Btrfs top-level filesystem on /mnt"
-  sudo mount -o "${BTRFS_TOP_OPTS}" "${BTRFS_TARGET}" /mnt || { log_error "Mounting top-level filesystem failed"; exit 1; }
+  mount_tracked /mnt sudo mount -o "${BTRFS_TOP_OPTS}" "${BTRFS_TARGET}" /mnt || die "Mounting top-level filesystem failed"
 }
 
 # Function: create_subvolumes
@@ -327,7 +391,7 @@ create_subvolumes() {
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
-      sudo btrfs subvolume create "/mnt/${subvol}" || { log_error "Failed to create subvolume ${subvol}"; exit 1; }
+      sudo btrfs subvolume create "/mnt/${subvol}" || die "Failed to create subvolume ${subvol}"
       # @swap must have no-COW set — Btrfs requires it for swapfiles and for
       # nodatacow mount option to take effect. Set it immediately after creation
       # before any data is written.
@@ -353,7 +417,7 @@ create_subvolumes() {
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then
       log_info "Creating overlay directory ${full_dir}"
-      sudo mkdir -p "${full_dir}" || { log_error "Failed to create directory ${full_dir}"; exit 1; }
+      sudo mkdir -p "${full_dir}" || die "Failed to create directory ${full_dir}"
     else
       log_info "Overlay directory ${full_dir} already exists"
     fi
@@ -419,7 +483,7 @@ create_subvolumes() {
     local full_dir="/mnt/@data/${dir}"
     if [ ! -d "${full_dir}" ]; then
       log_info "Creating service directory ${full_dir}"
-      sudo mkdir -p "${full_dir}" || { log_error "Failed to create directory ${full_dir}"; exit 1; }
+      sudo mkdir -p "${full_dir}" || die "Failed to create directory ${full_dir}"
     else
       log_info "Service directory ${full_dir} already exists"
     fi
@@ -440,15 +504,15 @@ extract_system_image() {
     exit 1
   fi
   log_info "Creating snapshot @blue from shanios_base"
-  sudo btrfs subvolume snapshot -r "/mnt/shanios_base" "/mnt/@blue" || { log_error "Snapshot creation for @blue failed"; exit 1; }
+  sudo btrfs subvolume snapshot -r "/mnt/shanios_base" "/mnt/@blue" || die "Snapshot creation for @blue failed"
   log_info "Creating snapshot @green from @blue"
-  sudo btrfs subvolume snapshot -r "/mnt/@blue" "/mnt/@green" || { log_error "Snapshot creation for @green failed"; exit 1; }
+  sudo btrfs subvolume snapshot -r "/mnt/@blue" "/mnt/@green" || die "Snapshot creation for @green failed"
   log_info "Deleting original subvolume shanios_base"
   sudo btrfs subvolume delete "/mnt/shanios_base" || log_warn "Could not delete shanios_base; please remove manually later"
   log_info "Setting active slot marker to 'blue'"
-  echo "blue" | sudo tee "/mnt/@data/current-slot" > /dev/null || { log_error "Failed to set active slot marker"; exit 1; }
+  echo "blue" | sudo tee "/mnt/@data/current-slot" > /dev/null || die "Failed to set active slot marker"
   log_info "Setting previous slot marker to 'green'"
-  echo "green" | sudo tee "/mnt/@data/previous-slot" > /dev/null || { log_error "Failed to set previous slot marker"; exit 1; }
+  echo "green" | sudo tee "/mnt/@data/previous-slot" > /dev/null || die "Failed to set previous slot marker"
 }
 
 # Function: extract_flatpak_image
@@ -467,11 +531,11 @@ extract_flatpak_image() {
   if sudo btrfs subvolume show "/mnt/@flatpak" &>/dev/null; then
     log_info "Existing @flatpak detected — deleting before reseeding"
     sudo btrfs subvolume delete "/mnt/@flatpak" \
-      || { log_error "Failed to delete existing @flatpak"; exit 1; }
+      || die "Failed to delete existing @flatpak"
   fi
 
   log_info "Creating snapshot @flatpak from flatpak_subvol"
-  sudo btrfs subvolume snapshot "/mnt/flatpak_subvol" "/mnt/@flatpak" || { log_error "Snapshot creation for @flatpak failed"; exit 1; }
+  sudo btrfs subvolume snapshot "/mnt/flatpak_subvol" "/mnt/@flatpak" || die "Snapshot creation for @flatpak failed"
   log_info "Deleting original subvolume flatpak_subvol"
   sudo btrfs subvolume delete "/mnt/flatpak_subvol" || log_warn "Could not delete flatpak_subvol; please remove manually later"
 }
@@ -492,11 +556,11 @@ extract_snap_image() {
   if sudo btrfs subvolume show "/mnt/@snapd" &>/dev/null; then
     log_info "Existing @snapd detected — deleting before reseeding"
     sudo btrfs subvolume delete "/mnt/@snapd" \
-      || { log_error "Failed to delete existing @snapd"; exit 1; }
+      || die "Failed to delete existing @snapd"
   fi
 
   log_info "Creating snapshot @snapd from snapd_subvol"
-  sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snapd" || { log_error "Snapshot creation for @snapd failed"; exit 1; }
+  sudo btrfs subvolume snapshot "/mnt/snapd_subvol" "/mnt/@snapd" || die "Snapshot creation for @snapd failed"
   log_info "Deleting original subvolume snapd_subvol"
   sudo btrfs subvolume delete "/mnt/snapd_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
 }
@@ -513,9 +577,9 @@ create_swapfile() {
     return 0
   fi
 
-  log_info "Creating swapfile at /mnt/@swap/swapfile"
-  sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/@swap/swapfile" || { log_error "Swapfile creation failed"; exit 1; }
-  sudo swapon "/mnt/@swap/swapfile" || { log_error "Swapfile activation failed"; exit 1; }
+  log_info "Creating swapfile at /mnt/${SWAPFILE_PATH}"
+  sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/${SWAPFILE_PATH}" || die "Swapfile creation failed"
+  sudo swapon "/mnt/${SWAPFILE_PATH}" || die "Swapfile activation failed"
 }
 
 # Main setup function: run all steps sequentially.

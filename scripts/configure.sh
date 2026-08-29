@@ -6,7 +6,35 @@
 
 set -Eeuo pipefail
 IFS=$'\n\t'
-trap 'echo "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; exit 1' ERR
+
+# --- Cleanup stack for unwinding mounts/mapper devices on failure ----------
+# Every mount performed by this script pushes its own undo command here
+# immediately on success (see mount_tracked() below). On any die()/ERR-trap
+# failure, run_cleanup_stack() unwinds everything *this run* actually set
+# up, in reverse (LIFO) order — since mounts are pushed in the same
+# chronological order they were created, unwinding in reverse naturally
+# unmounts children before parents. A normal successful exit never calls
+# this — configure.sh intentionally leaves the target mounted for whatever
+# runs next.
+declare -a _CLEANUP_STACK=()
+_push_cleanup() { _CLEANUP_STACK+=("$1"); }
+run_cleanup_stack() {
+  local i
+  for (( i=${#_CLEANUP_STACK[@]}-1; i>=0; i-- )); do
+    log_warn "Cleanup: ${_CLEANUP_STACK[i]}"
+    eval "${_CLEANUP_STACK[i]}" || true
+  done
+  _CLEANUP_STACK=()
+}
+# Run a mount command; on success, remember how to undo it.
+#   mount_tracked <mountpoint-to-unmount-on-cleanup> <mount command...>
+mount_tracked() {
+  local mountpoint="$1"; shift
+  "$@" || return 1
+  _push_cleanup "sudo umount -R '${mountpoint}' 2>/dev/null || sudo umount -Rl '${mountpoint}' 2>/dev/null || true"
+}
+
+trap 'ec=$?; echo "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; run_cleanup_stack; exit "$ec"' ERR
 
 ### Configuration variables
 OS_NAME="shanios"
@@ -66,7 +94,7 @@ fi
 log_info() { echo "[CONFIG][INFO] $*"; }
 log_warn() { echo "[CONFIG][WARN] $*" >&2; }
 log_error() { echo "[CONFIG][ERROR] $*" >&2; }
-die() { log_error "$*"; exit 1; }
+die() { log_error "$*"; run_cleanup_stack; exit 1; }
 
 
 TARGET="/mnt"
@@ -81,16 +109,16 @@ mount_target() {
   ACTIVE_SLOT="blue"
 
   log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
-  sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
+  mount_tracked "${TARGET}" sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
 
   for fs in proc sys dev run; do
-    sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
+    mount_tracked "${TARGET}/$fs" sudo mount --rbind "/$fs" "${TARGET}/$fs" || die "Failed to mount /$fs"
   done
   if [[ -d "/sys/firmware/efi/efivars" ]]; then
-    sudo mount --rbind "/sys/firmware/efi/efivars" "${TARGET}/sys/firmware/efi/efivars" \
+    mount_tracked "${TARGET}/sys/firmware/efi/efivars" sudo mount --rbind "/sys/firmware/efi/efivars" "${TARGET}/sys/firmware/efi/efivars" \
       || log_warn "Failed to bind-mount efivars — Secure Boot features will be unavailable"
   fi
-  sudo mount /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
+  mount_tracked "${TARGET}/boot/efi" sudo mount /dev/disk/by-label/"${BOOTLABEL}" "${TARGET}/boot/efi" || die "EFI partition mount failed"
 }
 
 # Function: mount_additional_subvols
@@ -126,7 +154,7 @@ mount_additional_subvols() {
     IFS='|' read -r target options <<< "${subvols[$subvol]}"
     log_info "Mounting subvolume ${subvol} to ${TARGET}${target} with options: ${options}"
     sudo mkdir -p "${TARGET}${target}" 2>/dev/null || true
-    sudo mount -t btrfs -o "subvol=${subvol},${options}" "$device" "${TARGET}${target}" \
+    mount_tracked "${TARGET}${target}" sudo mount -t btrfs -o "subvol=${subvol},${options}" "$device" "${TARGET}${target}" \
       || log_warn "Failed to mount subvolume ${subvol} to ${TARGET}${target}"
   done
 }
@@ -151,7 +179,7 @@ mount_overlay() {
 
   # Mount the overlay using the correct lower, upper, and work directories
   log_info "Mounting overlay on /etc"
-  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
+  mount_tracked "${TARGET}/etc" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
 
   #############################
   # Configure overlay for /var
@@ -169,7 +197,7 @@ mount_overlay() {
                   "${TARGET}/data/overlay/var/work"
 
   log_info "Mounting overlay on /var (install-time chroot only)"
-  sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
+  mount_tracked "${TARGET}/var" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
   #############################
   # Setup bind mounts for persistent service state
   #############################
@@ -242,7 +270,7 @@ mount_overlay() {
 
     # Both source and target exist, create bind mount
     log_info "Bind mounting /var/lib/${service}"
-    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/lib/${service}"
+    mount_tracked "${target}" sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/lib/${service}"
   done
 
   # /var/spool service directories should already exist from install.sh
@@ -275,7 +303,7 @@ mount_overlay() {
 
     # Both source and target exist, create bind mount
     log_info "Bind mounting /var/spool/${service}"
-    sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/spool/${service}"
+    mount_tracked "${target}" sudo mount --bind "${source}" "${target}" || log_warn "Failed to bind mount /var/spool/${service}"
   done
 }
 
@@ -297,7 +325,19 @@ run_in_target() {
 setup_machine_id_target() {
   # No variable is required for machine-id setup; always execute.
   log_info "Generating new machine-id"
-  run_in_target "systemd-machine-id-setup --commit"
+  # The base image ships a non-empty /etc/machine-id created during the
+  # image build (build-base-image.sh commits one early). 'machine-id-setup
+  # --commit' treats an existing non-empty ID as final and keeps it, which
+  # would give every installed system the build host's identity (breaking
+  # journal uniqueness, DHCP client-id, etc.).
+  #
+  # Truncate first so a fresh ID is generated for this installation.
+  # Plain 'systemd-machine-id-setup' writes /etc/machine-id directly,
+  # which is what works inside a chroot: '--commit' only converts a
+  # TRANSIENT id from a running PID 1 (/run/machine-id), which does not
+  # exist here — verified live in the test harness (it fails with
+  # "Failed to read machine ID back" under nspawn/chroot).
+  run_in_target ": > /etc/machine-id && systemd-machine-id-setup"
 }
 
 # Function: setup_hostname_target
@@ -548,17 +588,28 @@ setup_autologin_target() {
       run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v greetd >/dev/null"; then
       log_info "Configuring greetd autologin for ${OSI_USER_USERNAME}"
-      run_in_target 'if [ -f /etc/greetd/config.toml ]; then
-          sed -i "s/^user *= *.*/user = \"$1\"/" /etc/greetd/config.toml
+      # OSI_USER_USERNAME is passed as data to awk's -v (never spliced into
+      # the awk/sed PROGRAM text) so a username containing sed/awk-special
+      # characters (e.g. '/', '&', '\') can't corrupt the substitution
+      # expression or be (mis)interpreted as replacement-text metacharacters.
+      run_in_target 'f=/etc/greetd/config.toml
+        if [ -f "$f" ]; then
+          awk -v u="$1" '"'"'{ if ($0 ~ /^user *= *.*/) print "user = \"" u "\""; else print }'"'"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
         else
-          printf "[autologin]\nuser = \"%s\"\n" "$1" > /etc/greetd/config.toml
+          printf "[autologin]\nuser = \"%s\"\n" "$1" > "$f"
         fi' "$OSI_USER_USERNAME"
     elif run_in_target "command -v lightdm >/dev/null"; then
       log_info "Configuring LightDM autologin for ${OSI_USER_USERNAME}"
-      run_in_target 'sed -i "s/^#*autologin-user=.*/autologin-user=$1/" /etc/lightdm/lightdm.conf' "$OSI_USER_USERNAME"
+      # See greetd branch above for why this is awk -v, not sed with the
+      # username spliced into the program text.
+      run_in_target 'f=/etc/lightdm/lightdm.conf
+        awk -v u="$1" '"'"'{ if ($0 ~ /^#*autologin-user=.*/) print "autologin-user=" u; else print }'"'"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"' "$OSI_USER_USERNAME"
     elif run_in_target "command -v lxdm >/dev/null"; then
       log_info "Configuring LXDM autologin for ${OSI_USER_USERNAME}"
-      run_in_target 'sed -i "s/^#*autologin=.*/autologin=$1/" /etc/lxdm/lxdm.conf' "$OSI_USER_USERNAME"
+      # See greetd branch above for why this is awk -v, not sed with the
+      # username spliced into the program text.
+      run_in_target 'f=/etc/lxdm/lxdm.conf
+        awk -v u="$1" '"'"'{ if ($0 ~ /^#*autologin=.*/) print "autologin=" u; else print }'"'"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"' "$OSI_USER_USERNAME"
     else
       log_info "Configuring getty autologin for ${OSI_USER_USERNAME}"
       run_in_target 'mkdir -p /etc/systemd/system/getty@tty1.service.d && printf "[Service]\nExecStart=\nExecStart=-/usr/bin/agetty --autologin %s --noclear %%I \$TERM\n" "$1" > /etc/systemd/system/getty@tty1.service.d/autologin.conf' "$OSI_USER_USERNAME"
@@ -695,29 +746,39 @@ sign_efi_binary() {
     return 0
   fi
 
-  # Sign to a .tmp file, verify, then atomically replace the original.
-  # If signing or verification fails the original binary is restored.
+  # Sign to a .tmp file, verify the signature on the TMP file BEFORE it
+  # ever replaces the live binary, then atomically replace the original.
+  # Previously this verified the *live* file only after the mv (restoring
+  # from backup if that failed) — functionally safe on the happy path,
+  # but it left a real, if narrow, window where the live binary could be
+  # observed already-replaced but not yet confirmed valid (e.g. a crash
+  # between the mv and that check). Moved the check before the mv instead
+  # — the live file is now never touched by anything that hasn't already
+  # been proven valid — matching shani-deploy/scripts/gen-efi.sh's own
+  # sign_efi_binary(), which uses this exact ordering for this exact
+  # reason. The old post-mv verify+restore is removed as redundant: it
+  # was checking byte-identical content to what this new check already
+  # confirmed before the mv.
   local tmp_signed="${binary}.signed.tmp"
   local tmp_backup="${binary}.orig.tmp"
 
   run_in_target "cp ${binary} ${tmp_backup}" \
     || { run_in_target "rm -f ${tmp_signed} ${tmp_backup}"; die "Failed to backup ${binary} before signing"; }
 
-  if run_in_target "sbsign --key /etc/secureboot/keys/MOK.key \
+  if ! run_in_target "sbsign --key /etc/secureboot/keys/MOK.key \
       --cert /etc/secureboot/keys/MOK.crt \
       --output ${tmp_signed} ${binary}"; then
-    run_in_target "mv ${tmp_signed} ${binary}"
-  else
     run_in_target "rm -f ${tmp_signed} ${tmp_backup}"
     die "sbsign failed for ${binary}"
   fi
 
-  if ! run_in_target "sbverify --cert /etc/secureboot/keys/MOK.crt ${binary}" &>/dev/null 2>&1; then
-    log_warn "sbverify failed for ${binary} — restoring original"
-    run_in_target "mv ${tmp_backup} ${binary}"
-    die "sbverify failed for ${binary} — original restored"
+  if ! run_in_target "sbverify --cert /etc/secureboot/keys/MOK.crt ${tmp_signed}" &>/dev/null 2>&1; then
+    run_in_target "rm -f ${tmp_signed} ${tmp_backup}"
+    die "sbverify failed for signed output of ${binary} — live file left unchanged"
   fi
 
+  run_in_target "mv ${tmp_signed} ${binary}" \
+    || { run_in_target "rm -f ${tmp_signed} ${tmp_backup}"; die "Failed to move verified signed file into place for ${binary}"; }
   run_in_target "rm -f ${tmp_backup}"
   log_info "EFI binary signed and verified: ${binary}"
 }
@@ -915,19 +976,75 @@ generate_loader_conf() {
 
 # Helper: _mokutil_stage_via_hash
 # Stage MOK enrollment via mokutil --import --hash-file.
-# Generates a hash of 'shanios' inside the chroot and passes it to mokutil.
-# MokManager will prompt the user to confirm with password 'shanios' on first boot.
+# Generates a RANDOM per-install password (previously a hardcoded literal,
+# "shanios", identical on every installed system and printed in plaintext to
+# the installer log — anyone who ever read this script, or a leaked log,
+# knew every machine's MOK enrollment password) and passes it to mokutil.
+# MokManager will prompt the user to confirm with this password on first
+# boot; the password itself is written only to a root-only file inside the
+# target (see below) and is never logged. One residual, mokutil-imposed
+# exposure remains: mokutil's own CLI has no non-argv way to feed it the
+# password to hash, so it is briefly visible via `ps aux` to that one
+# mokutil process — see the comment at the `mokutil --generate-hash` call
+# below.
 _mokutil_stage_via_hash() {
     local der_file="$1"
     local tmp_hash="/run/.mok-enroll-hash"
-    log_info "Staging MOK enrollment via generated password hash (password: shanios)"
-    if run_in_target "
+    local pw_target_file="/etc/shani-installer-mok-password"
+
+    # Generated inside the chroot (openssl is already required there for MOK
+    # key generation) so the plaintext password never has to cross back out
+    # to the installer's own environment at all. Restricted to alnum so it's
+    # safe to hand to mokutil/awk without any quoting edge cases.
+    local mok_password
+    mok_password=$(run_in_target "openssl rand -base64 18 | tr -dc 'A-Za-z0-9'" | head -c 24)
+    if [[ -z "$mok_password" ]]; then
+        log_warn "Failed to generate a random MOK enrollment password — skipping MOK enrollment"
+        return 1
+    fi
+
+    log_info "Staging MOK enrollment via generated password hash"
+    # mok_password is passed as a real positional argument ($1 inside the
+    # chroot) rather than interpolated into the command string, which rules
+    # out shell-injection — but NOT ps-aux exposure: mokutil's own CLI has no
+    # stdin/keyfile-based way to feed it the password to hash (only
+    # --generate-hash=PASSWORD or an interactive tty prompt), so for the
+    # brief lifetime of this one mokutil process, the password IS visible in
+    # its argv via `ps aux` — a residual, mokutil-imposed limitation, not
+    # something this script can avoid short of reimplementing MOK hash
+    # generation itself. This is still a strict improvement over before: the
+    # value is random per-install rather than the same hardcoded "shanios"
+    # every install shared, and it is never passed to log_info/log_warn, so
+    # it never reaches the installer log or, later, the target's own logs.
+    if run_in_target '
         set -e
-        mokutil --generate-hash=shanios > '${tmp_hash}' 2>/dev/null
-        mokutil --import '${der_file}' --hash-file '${tmp_hash}' >/dev/null 2>&1
-        rm -f '${tmp_hash}'
-    "; then
-        log_info "MOK enrollment staged — confirm with password 'shanios' in MokManager on first boot"
+        set +x
+        mokutil --generate-hash="$1" > "$2" 2>/dev/null
+        mokutil --import "$3" --hash-file "$2" >/dev/null 2>&1
+        rm -f "$2"
+    ' "$mok_password" "$tmp_hash" "$der_file"; then
+        # Persist the password to a root-only file in the target so the user
+        # has a way to retrieve it to confirm enrollment in MokManager on
+        # first boot.
+        #
+        # Deliberately NOT done via run_in_target's usual "pass as a
+        # positional arg to the chroot's bash -c" pattern: that pattern
+        # protects against shell-injection (the value is never parsed as
+        # shell syntax) but does NOT protect against ps-aux exposure — the
+        # positional argument still becomes part of that chroot'd bash -c
+        # process's own argv, visible to any local user for as long as it
+        # runs (verified live: an earlier version of this fix leaked the
+        # password this way). Piping through `sudo tee` instead means the
+        # secret only ever travels over a pipe (stdin), never as any
+        # process's argv; ${TARGET} is written directly, matching how
+        # mount_overlay() etc. already touch target paths straight from the
+        # installer's own process without a chroot detour.
+        if printf '%s\n' "$mok_password" | sudo tee "${TARGET}${pw_target_file}" >/dev/null \
+            && sudo chmod 600 "${TARGET}${pw_target_file}"; then
+            log_info "MOK enrollment staged — the confirmation password for MokManager on first boot has been saved to ${pw_target_file} (root-only, never logged)"
+        else
+            log_warn "MOK enrollment staged, but failed to persist the confirmation password to ${pw_target_file} — retrieve it from MokManager's own prompt flow instead"
+        fi
     else
         run_in_target "rm -f '${tmp_hash}'" 2>/dev/null || true
         log_warn "mokutil hash-file staging failed — MOK.der is present in EFI partition for manual enrollment on first boot"
