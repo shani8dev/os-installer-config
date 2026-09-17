@@ -160,3 +160,64 @@ This repo's own script comments document each `OSI_*` variable's meaning
 inline — read the full variable list at the top of `install.sh` and
 `configure.sh` before assuming you know what a complete, valid environment
 looks like; guessing at a subset has produced incomplete test runs before.
+
+## Garuda Cross-Reference Findings (added 2026-09-17)
+
+Based on a full scan of the garuda clones mapped against shani — **29 repos** (not 34; several user-listed names don't exist — see `../garuda-catalog.md` §Discrepancies). See `../garuda-mapping-analysis.md`, `../deep-analysis.md`, `../shani-catalog.md`, and `../garuda-catalog.md` for full details. garuda-setup-assistant is the most directly comparable repo — both handle first-run installation configuration.
+
+### 🟡 HIGH: CI/CD gap (shared across ALL repos)
+
+1. **Shared CI templates** (estimated 2-3 days, affects ALL repos).
+   - Garuda's `gitlab-ci-commons` provides reusable templates (commitizen, flake-check, pre-commit, tag-to-release). Each repo `include:`s from it.
+   - Shani repos run on GitHub Actions (no `.gitlab-ci.yml` anywhere) — 8 repos (blog, builder, docs, fleet, insights, install-media, pkgbuilds, platform) carry hand-written `.github/workflows/*.yml` with duplicated patterns.
+   - **Action**: Create `shani-ci-commons` (GitHub Actions reusable workflows / composite actions) with templates for lint, test, build, security scan. Each repo references them via `uses: shani8dev/shani-ci-commons/...` instead of copy-pasting.
+   - **Affects**: All 15 shani repos.
+
+### 🟡 HIGH: Dependency management gap
+
+2. **Add automated dependency updates** (estimated 4 hours, affects ALL repos).
+   - Garuda uses `renovate-runner` running hourly against all repos with `renovate.json` files.
+   - Shani repos have no automated dependency updating.
+   - **Action**: Set up Renovate (self-hosted or gitlab.com) with a fleet-wide config. Each repo adds a minimal `renovate.json`.
+
+### 🟢 MEDIUM: Code quality
+
+3. **Conventional commit enforcement** (estimated 2 hours, affects ALL repos).
+   - Every garuda repo has a `[commitizen]` badge; `cz commit` is enforced.
+   - Shani repos have no commit message standardization.
+
+### 🔗 Cross-repo comparison vs garuda-setup-assistant
+
+4. **Setup assistant comparison** — Garuda ships `garuda-setup-assistant`, a Qt-based first-run wizard with multi-language support (16+ languages). This repo's `install.sh`/`configure.sh` are CLI-only, driven by `OSI_*` env vars. Consider a lightweight GUI setup assistant (GTK4, matching shani-gui's framework) for desktop users — especially valuable for users unfamiliar with command-line installs. This would be a new repo or addition to shani-install-media. See `../garuda-mapping-analysis.md` section 4.5 for the full proposal.
+
+5. **No post-install welcome app** — Garuda has `garuda-welcome` (tips, links, system info, quick actions). Shani has no equivalent. Could be a simple GTK4 app showing shani news, tips, system status, and links to docs/support.
+
+### 🔍 Re-Scan Findings (2026-09-17)
+
+Re-scanned against `garuda-catalog.md` (29 repos, not 34) and `shani-catalog.md` (16 repos). **Confirmed mapping: `garuda-setup-assistant`** — it EXISTS in `garuda-clones/` as a first-run setup wizard (Shell scripts + Qt QML/JS wizard pages, YAML config, installs to `etc/`/`usr/` share layout via CMake, Transifex translations, GitLab CI, no C++ source, no pkexec policy). Both handle first-run installation configuration. Key difference confirmed: os-installer-config's `install.sh`/`configure.sh` are **CLI-only, driven by `OSI_*` env vars**, while garuda-setup-assistant is a **Qt-based wizard**.
+
+**New gaps from the garuda side:**
+1. **Qt GUI wizard gap** — garuda-setup-assistant ships a Qt-based first-run wizard; os-installer-config has no GUI at all (CLI-only `OSI_*` env vars). A GUI would need to be GTK4 (matching `shani-gui`'s framework), not Qt — see the existing finding #4 above.
+2. **Translation breadth** — garuda-setup-assistant uses Transifex with 16+ languages; os-installer-config has only `de_DE` and `en_US` `.po` files (confirmed in `shani-catalog.md` §9).
+3. **No CI workflows** — garuda-setup-assistant has GitLab CI; os-installer-config has pre-commit hooks only (confirmed in `shani-catalog.md` §9).
+4. **No post-install welcome app** — garuda ships `garuda-welcome` (tips, links, system info, quick actions); shani has no equivalent (existing finding #5 above, still true).
+5. **No boot-repair/assistant tooling** — garuda has `garuda-boot-options` and `garuda-boot-repair` (Qt GUIs for bootloader/kernel-parameter management); shani's boot management lives inside `shani-deploy`'s CLI scripts with no GUI surface.
+
+**Shani advantages:**
+1. **Fully headless-scriptable** — `OSI_*` env-var driving means the real `install.sh`/`configure.sh` run end-to-end in `shani-install-media`'s test harness against loop-backed disks; garuda-setup-assistant's Qt wizard cannot be driven headlessly.
+2. **Failure-safety engineering** — undo-stack cleanup (`mount_tracked()`/`_push_cleanup`), verify-before-replace EFI signing, `die()` choke point — all verified live in the real test harness; garuda-setup-assistant documents none of this (no AGENTS.md, no tests in any of the 29 garuda repos).
+3. **Real test infrastructure** — `shani-install-media/test-env` exercises these scripts for real; the garuda side has no equivalent harness for its setup assistant.
+
+**Qt GUI gap note (relevant):** garuda-setup-assistant is Qt-based; shani's GUI framework is GTK4/Python (`shani-gui`). Any future shani setup wizard should be GTK4 to match — and garuda's broader Qt GUI fleet (12 apps: garuda-welcome, garuda-assistant, garuda-boot-options, garuda-boot-repair, garuda-gamer, garuda-network-assistant, garuda-downloader, garuda-nix-manager, garuda-settings-manager, garuda-system-maintenance, firefly, btrfs-assistant) has no shani equivalents beyond `shani-gui`'s in-progress tabs.
+
+### 📋 Implementation Roadmap (2026-09-17)
+
+Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap for the whole shani ecosystem).
+
+1. **YAML validation pattern (P2, 2 days).** Master-roadmap item #16, adapted from garuda-tools' `check-yaml.in` pattern. Build `scripts/validate-config.sh`: `yaml.safe_load` syntax check plus required-field checks (`distribution_name`, `scripts.install`, `scripts.configure`) before any ISO build, wired into `build.sh` as a pre-build step. Fail fast with clear error messages.
+
+2. **CI workflow (P1).** No CI today (pre-commit only). Use `shani-ci-commons` templates (item #7): `bash -n` on all scripts, `config.yaml` validation (the validator from item #1), and a translation-extraction check on the `.po` files.
+
+3. **GUI setup assistant consideration (P3, only if human decides).** The CLI-by-design `OSI_*` env-var approach is a deliberate, superior choice — it's what makes the real scripts headlessly testable in `shani-install-media`'s harness. If a GUI is ever wanted, it must be built natively for shani (GTK4, matching `shani-gui`), NOT ported from garuda's Qt wizard.
+
+4. **Conventional commits + `renovate.json` (P1).** Ecosystem-wide commit convention (item #9) and Renovate (item #8) — minimal for a config repo with no runtime dependencies.
