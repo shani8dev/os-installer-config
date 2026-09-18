@@ -14,6 +14,14 @@ installed system. There is no "undo" for a bad partition table or a
 half-configured install — verify accordingly, not like ordinary
 application code.
 
+## Empirical verification (mandatory)
+
+**Reading code is analysis; running code is verification.** A change is not
+verified by reading the diff, running `bash -n`, or confirming it "looks
+correct." It is verified by observing the actual behavior of the real
+thing in the real environment — built, served, deployed, signed, running.
+If you haven't seen it work (or fail) for real, it isn't verified.
+
 ## Rule: these scripts run once, as root, during a real OS install — verify accordingly
 
 `install.sh` partitions and formats a real disk; `configure.sh` runs
