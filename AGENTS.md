@@ -114,7 +114,7 @@ unsafe; the fix should handle it silently and correctly instead.
   two pre-signed UKIs, exit 0 overall.
 - **Config sections.** `config.yaml` has: `internet` (`connection_required`, `checker_url`), `welcome_page` (`logo`, `text`, `usage`), `disk.min_size` (28 GiB), `commands` (`browser`, `disks`, `reboot`, `wifi`).
 - **yaml.SafeLoader.** `po/config_to_pot.py:92` uses `yaml.SafeLoader` — safe parsing.
-- **CI status.** No CI workflows, has pre-commit hooks.
+- **CI status.** `.github/workflows/ci.yml` added 2026-09-18: two jobs — `validate` (bash -n all scripts + `validate-config.sh` against repo config) and `translation-extraction` (regenerate `po/config.pot` from `config.yaml` via `config_to_pot.py`, require byte-identical committed pot). Verified locally.
 - **No unmount/luksClose cleanup on failure — FIXED.** Both scripts now
   push an undo command (`mount_tracked()`/`_push_cleanup`) onto a
   chronological stack immediately after every successful mount and LUKS
@@ -207,7 +207,7 @@ Re-scanned against `garuda-catalog.md` (29 repos, not 34) and `shani-catalog.md`
 **New gaps from the garuda side:**
 1. **Qt GUI wizard gap** — garuda-setup-assistant ships a Qt-based first-run wizard; os-installer-config has no GUI at all (CLI-only `OSI_*` env vars). A GUI would need to be GTK4 (matching `shani-gui`'s framework), not Qt — see the existing finding #4 above.
 2. **Translation breadth** — garuda-setup-assistant uses Transifex with 16+ languages; os-installer-config has only `de_DE` and `en_US` `.po` files (confirmed in `shani-catalog.md` §9).
-3. **No CI workflows** — garuda-setup-assistant has GitLab CI; os-installer-config has pre-commit hooks only (confirmed in `shani-catalog.md` §9).
+3. **CI workflows (gap closing)** — garuda-setup-assistant has GitLab CI; os-installer-config now has `.github/workflows/ci.yml` (2026-09-18: bash -n, validator, translation-extraction sync check).
 4. **No post-install welcome app** — garuda ships `garuda-welcome` (tips, links, system info, quick actions); shani has no equivalent (existing finding #5 above, still true).
 5. **No boot-repair/assistant tooling** — garuda has `garuda-boot-options` and `garuda-boot-repair` (Qt GUIs for bootloader/kernel-parameter management); shani's boot management lives inside `shani-deploy`'s CLI scripts with no GUI surface.
 
@@ -222,9 +222,9 @@ Re-scanned against `garuda-catalog.md` (29 repos, not 34) and `shani-catalog.md`
 
 Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap for the whole shani ecosystem).
 
-1. **YAML validation pattern (P2, 2 days).** Master-roadmap item #16, adapted from garuda-tools' `check-yaml.in` pattern. Build `scripts/validate-config.sh`: `yaml.safe_load` syntax check plus required-field checks (`distribution_name`, `scripts.install`, `scripts.configure`) before any ISO build, wired into `build.sh` as a pre-build step. Fail fast with clear error messages.
+1. **YAML validation pattern (DONE).** `scripts/validate-config.sh` built: REPO_DIR derived from `BASH_SOURCE` (no hardcoded paths), required-field checks for `distribution_name`, `scripts.install`, `scripts.configure`, unknown top-level key warnings. Runs in CI on every push/PR.
 
-2. **CI workflow (P1).** No CI today (pre-commit only). Use `shani-ci-commons` templates (item #7): `bash -n` on all scripts, `config.yaml` validation (the validator from item #1), and a translation-extraction check on the `.po` files.
+2. **CI workflow (DONE).** `.github/workflows/ci.yml` added: `validate` job (bash -n all scripts, run `validate-config.sh` against repo config) and `translation-extraction` job (regenerate `po/config.pot` from `config.yaml` via `config_to_pot.py`, fail if committed pot differs — guards against un-regenerated pot after config.yaml string changes).
 
 3. **GUI setup assistant consideration (P3, only if human decides).** The CLI-by-design `OSI_*` env-var approach is a deliberate, superior choice — it's what makes the real scripts headlessly testable in `shani-install-media`'s harness. If a GUI is ever wanted, it must be built natively for shani (GTK4, matching `shani-gui`), NOT ported from garuda's Qt wizard.
 

@@ -18,7 +18,7 @@ set -euo pipefail
 
 CONFIG_DIR="${1:-/etc/shani/os-installer/config}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="/home/shrinivaskumbhar/Documents/shani/os-installer-config"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ERRORS=0
 WARNINGS=0
@@ -39,7 +39,9 @@ fi
 
 # --- Check required config files exist ---
 echo "--- Checking required config files ---"
-REQUIRED_FILES=("config.yaml" "config.json")
+# os-installer reads config.yaml (the framework's YAML format). config.json
+# was an artifact of an earlier validator draft — the repo ships YAML only.
+REQUIRED_FILES=("config.yaml")
 found_config=false
 
 for config_file in "${REQUIRED_FILES[@]}"; do
@@ -50,7 +52,7 @@ for config_file in "${REQUIRED_FILES[@]}"; do
 done
 
 if [[ "$found_config" == "false" ]]; then
-    echo "ERROR: No config file found (expected config.yaml or config.json)" >&2
+    echo "ERROR: No config file found (expected config.yaml)" >&2
     ERROR_MESSAGES+=("No config file found in ${CONFIG_DIR}")
     ERRORS=$((ERRORS + 1))
 fi
@@ -177,6 +179,40 @@ else:
     else
         echo "  WARNING: python3 not available, skipping required field checks" >&2
         WARNING_MESSAGES+=("python3 not available for required field checks")
+        WARNINGS=$((WARNINGS + 1))
+    fi
+fi
+
+# --- Warn on unknown top-level keys (typo / stale-section detection) ---
+if [[ -n "$YAML_CONFIG" ]]; then
+    echo ""
+    echo "--- Checking for unknown top-level keys ---"
+
+    if command -v python3 &>/dev/null; then
+        UNKNOWN_KEYS="$(python3 -c "
+import yaml
+with open('${YAML_CONFIG}', 'r') as f:
+    data = yaml.safe_load(f) or {}
+known = {'distribution_name', 'scripts', 'internet', 'fixed_language',
+         'welcome_page', 'disk', 'disk_encryption', 'user',
+         'skip_region', 'skip_user', 'failure_help_url', 'commands'}
+unknown = [k for k in data if k not in known]
+print('\n'.join(unknown))
+" 2>/dev/null)" || true
+
+        if [[ -n "$UNKNOWN_KEYS" ]]; then
+            while IFS= read -r key; do
+                [[ -n "$key" ]] || continue
+                echo "  ⚠ unknown top-level key: ${key}" >&2
+                WARNING_MESSAGES+=("Unknown top-level key '${key}' in ${YAML_CONFIG}")
+                WARNINGS=$((WARNINGS + 1))
+            done <<< "$UNKNOWN_KEYS"
+        else
+            echo "  All top-level keys recognized"
+        fi
+    else
+        echo "  WARNING: python3 not available, skipping unknown-key check" >&2
+        WARNING_MESSAGES+=("python3 not available for unknown-key check")
         WARNINGS=$((WARNINGS + 1))
     fi
 fi

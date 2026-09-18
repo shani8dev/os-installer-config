@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: osi-config-ci
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate scripts and config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install python3-yaml
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml
+
+      - name: bash -n on all scripts
+        run: |
+          for script in scripts/*.sh; do
+            [ -f "$script" ] && bash -n "$script"
+          done
+
+      - name: Validate repo config with validate-config.sh
+        run: bash scripts/validate-config.sh "$PWD"
+
+  translation-extraction:
+    name: Translation extraction sync check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install python3-yaml
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml
+
+      - name: Regenerate config.pot and diff against committed
+        run: |
+          # config_to_pot.py writes po/config.pot next to the config file.
+          # Regenerate into a temp dir (never touch the working tree), then
+          # require a byte-identical committed po/config.pot — the generator
+          # is deterministic, so any diff means someone changed config.yaml
+          # strings without regenerating the pot.
+          T=$(mktemp -d)
+          mkdir -p "$T/po"
+          cp config.yaml "$T/config.yaml"
+          python3 po/config_to_pot.py "$T/config.yaml"
+          if ! diff -q "$T/po/config.pot" po/config.pot; then
+            echo "FAIL: po/config.pot is stale — run: python3 po/config_to_pot.py config.yaml" >&2
+            exit 1
+          fi
+          echo "OK: po/config.pot matches extraction from config.yaml"

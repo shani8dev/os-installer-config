@@ -16,87 +16,13 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-msgid "A welcoming text to inform about the installation."
-msgstr ""
+msgid "Welcome to Shani OS!
 
-msgid "GNOME"
-msgstr ""
+An Immutable OS for Ultimate Reliability
 
-msgid "Simple desktop that can be personalized with extensions."
-msgstr ""
+This installer will guide you through a quick and secure setup.
 
-msgid "KDE Plasma"
-msgstr ""
-
-msgid "Configurable desktop that is similar to Windows."
-msgstr ""
-
-msgid "Xfce"
-msgstr ""
-
-msgid "Lightweight desktop with focus on modularity."
-msgstr ""
-
-msgid "Enlightenment"
-msgstr ""
-
-msgid "Highly configurable, lightweight desktop for tinkerers."
-msgstr ""
-
-msgid "Firefox"
-msgstr ""
-
-msgid "Popular Web Browser from Mozilla"
-msgstr ""
-
-msgid "Chr👁️me"
-msgstr ""
-
-msgid "Spyware made by big brother"
-msgstr ""
-
-msgid "Files"
-msgstr ""
-
-msgid "Access and organize files"
-msgstr ""
-
-msgid "Optional Option"
-msgstr ""
-
-msgid "Select your favorite option"
-msgstr ""
-
-msgid "Nothing"
-msgstr ""
-
-msgid "Option 1"
-msgstr ""
-
-msgid "Option 2"
-msgstr ""
-
-msgid "Dummy Feature"
-msgstr ""
-
-msgid "Does not do anything"
-msgstr ""
-
-msgid "Snapshots"
-msgstr ""
-
-msgid "Snapshots allow restoring a previous state of your system"
-msgstr ""
-
-msgid "Background Image"
-msgstr ""
-
-msgid "Axolotls"
-msgstr ""
-
-msgid "Cats"
-msgstr ""
-
-msgid "Dogs"
+Let's begin!
+"
 msgstr ""
 
