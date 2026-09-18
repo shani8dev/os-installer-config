@@ -87,6 +87,22 @@ username containing `/` or `&` for `sed`) — the old code failing loudly
 with a syntax error on that input is itself proof the interpolation was
 unsafe; the fix should handle it silently and correctly instead.
 
+## Boundaries
+
+- ✅ **Always**: run any secret-handling change (LUKS passphrase, user
+  password, MOK enrollment password) through the `ps -eo pid,args` /
+  `/proc/*/cmdline` polling pattern concurrently with a real test-harness
+  run — this exact class of bug (argv leak, positional-argument leak via
+  `chroot ... bash -c` that looked safe but wasn't) has been found here
+  before.
+- ⚠️ **Ask first**: adding a GUI setup wizard — the CLI-by-design `OSI_*`
+  approach is a deliberate architectural choice (it's what makes headless
+  testing possible at all), not a gap to casually fill in.
+- 🚫 **Never**: consider a change to `install.sh`/`configure.sh` done from a
+  source read alone. There is no undo for a bad partition table or a
+  half-configured real install — run the real test harness (below) every
+  time, not just when the diff "looks" risky.
+
 ## Audit-verified known issues (confirmed present)
 
 - **MOK password random per-install (FIXED).** `scripts/configure.sh:939-1013` generates a random password via `openssl rand -base64 18 | tr -dc 'A-Za-z0-9'`, passes it as a positional argument to `mokutil`, and persists it to a root-only file via stdin tee.
