@@ -48,8 +48,11 @@ actually executing these scripts.
 
 ## Required verification for any change
 
-Use the sibling `shani-install-media` repo's test harness rather than
-building scratch disk images by hand each time:
+Before calling a change done, state the specific observable pass
+condition (e.g. "LUKS unlockable with the test passphrase," not "should
+work") and which command below produces the evidence for it. Use the
+sibling `shani-install-media` repo's test harness rather than building
+scratch disk images by hand each time:
 
 ```bash
 cd ../shani-install-media
@@ -86,6 +89,13 @@ containing the interpolation tool's own special characters (e.g. a
 username containing `/` or `&` for `sed`) — the old code failing loudly
 with a syntax error on that input is itself proof the interpolation was
 unsafe; the fix should handle it silently and correctly instead.
+
+## Commit discipline
+
+Before composing a commit message, run `git log --oneline -20` (and `git
+log -5 -- <touched paths>` for the files you changed) and match the
+existing style — subject shape, scope prefixes, body detail level —
+rather than writing in a generic format.
 
 ## Boundaries
 
