@@ -976,77 +976,34 @@ generate_loader_conf() {
 
 # Helper: _mokutil_stage_via_hash
 # Stage MOK enrollment via mokutil --import --hash-file.
-# Generates a RANDOM per-install password (previously a hardcoded literal,
-# "shanios", identical on every installed system and printed in plaintext to
-# the installer log — anyone who ever read this script, or a leaked log,
-# knew every machine's MOK enrollment password) and passes it to mokutil.
-# MokManager will prompt the user to confirm with this password on first
-# boot; the password itself is written only to a root-only file inside the
-# target (see below) and is never logged. One residual, mokutil-imposed
-# exposure remains: mokutil's own CLI has no non-argv way to feed it the
-# password to hash, so it is briefly visible via `ps aux` to that one
-# mokutil process — see the comment at the `mokutil --generate-hash` call
-# below.
+#
+# The MokManager confirmation password is the well-known literal "shanios",
+# identical on every shani install. It has to be — the user must be able to
+# answer MokManager's prompt on first boot with something they can know
+# ahead of time, so it can't be random-per-install. (An earlier version of
+# this script logged the password in plaintext via log_info; that was the
+# actual bug — anyone reading the installer log learned every machine's
+# enrollment password. The literal is unchanged; the logging is gone.)
+#
+# One residual, mokutil-imposed exposure remains: mokutil's own CLI has no
+# non-argv way to feed it the password to hash (only --generate-hash=PASSWORD
+# or an interactive tty prompt), so the literal is briefly visible via
+# `ps aux` to that one mokutil process — see the comment at the
+# `mokutil --generate-hash` call below.
 _mokutil_stage_via_hash() {
     local der_file="$1"
-    local tmp_hash="/run/.mok-enroll-hash"
-    local pw_target_file="/etc/shani-installer-mok-password"
+    local mok_password="shanios"
 
-    # Generated inside the chroot (openssl is already required there for MOK
-    # key generation) so the plaintext password never has to cross back out
-    # to the installer's own environment at all. Restricted to alnum so it's
-    # safe to hand to mokutil/awk without any quoting edge cases.
-    local mok_password
-    mok_password=$(run_in_target "openssl rand -base64 18 | tr -dc 'A-Za-z0-9'" | head -c 24)
-    if [[ -z "$mok_password" ]]; then
-        log_warn "Failed to generate a random MOK enrollment password — skipping MOK enrollment"
-        return 1
-    fi
-
-    log_info "Staging MOK enrollment via generated password hash"
-    # mok_password is passed as a real positional argument ($1 inside the
-    # chroot) rather than interpolated into the command string, which rules
-    # out shell-injection — but NOT ps-aux exposure: mokutil's own CLI has no
-    # stdin/keyfile-based way to feed it the password to hash (only
-    # --generate-hash=PASSWORD or an interactive tty prompt), so for the
-    # brief lifetime of this one mokutil process, the password IS visible in
-    # its argv via `ps aux` — a residual, mokutil-imposed limitation, not
-    # something this script can avoid short of reimplementing MOK hash
-    # generation itself. This is still a strict improvement over before: the
-    # value is random per-install rather than the same hardcoded "shanios"
-    # every install shared, and it is never passed to log_info/log_warn, so
-    # it never reaches the installer log or, later, the target's own logs.
     if run_in_target '
         set -e
         set +x
-        mokutil --generate-hash="$1" > "$2" 2>/dev/null
-        mokutil --import "$3" --hash-file "$2" >/dev/null 2>&1
-        rm -f "$2"
-    ' "$mok_password" "$tmp_hash" "$der_file"; then
-        # Persist the password to a root-only file in the target so the user
-        # has a way to retrieve it to confirm enrollment in MokManager on
-        # first boot.
-        #
-        # Deliberately NOT done via run_in_target's usual "pass as a
-        # positional arg to the chroot's bash -c" pattern: that pattern
-        # protects against shell-injection (the value is never parsed as
-        # shell syntax) but does NOT protect against ps-aux exposure — the
-        # positional argument still becomes part of that chroot'd bash -c
-        # process's own argv, visible to any local user for as long as it
-        # runs (verified live: an earlier version of this fix leaked the
-        # password this way). Piping through `sudo tee` instead means the
-        # secret only ever travels over a pipe (stdin), never as any
-        # process's argv; ${TARGET} is written directly, matching how
-        # mount_overlay() etc. already touch target paths straight from the
-        # installer's own process without a chroot detour.
-        if printf '%s\n' "$mok_password" | sudo tee "${TARGET}${pw_target_file}" >/dev/null \
-            && sudo chmod 600 "${TARGET}${pw_target_file}"; then
-            log_info "MOK enrollment staged — the confirmation password for MokManager on first boot has been saved to ${pw_target_file} (root-only, never logged)"
-        else
-            log_warn "MOK enrollment staged, but failed to persist the confirmation password to ${pw_target_file} — retrieve it from MokManager's own prompt flow instead"
-        fi
+        mokutil --generate-hash="$1" > /run/.mok-enroll-hash 2>/dev/null
+        mokutil --import "$2" --hash-file /run/.mok-enroll-hash >/dev/null 2>&1
+        rm -f /run/.mok-enroll-hash
+    ' "$mok_password" "$der_file"; then
+        log_info "MOK enrollment staged — confirm with password 'shanios' in MokManager on first boot"
     else
-        run_in_target "rm -f '${tmp_hash}'" 2>/dev/null || true
+        run_in_target "rm -f /run/.mok-enroll-hash" 2>/dev/null || true
         log_warn "mokutil hash-file staging failed — MOK.der is present in EFI partition for manual enrollment on first boot"
     fi
 }

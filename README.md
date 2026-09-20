@@ -68,13 +68,14 @@ that this repo's scripts consume:
   re-enables them), root password, Plymouth theme, firewall rules,
   Secure Boot MOK key generation and enrollment, LUKS crypttab, and the
   initial UKI + boot entry generation for the freshly-installed slot.
-
-  **MOK enrollment password** — `configure.sh` generates a random
-  per-install password (via `openssl rand -base64 18 | tr -dc 'A-Za-z0-9'`)
-  for Secure Boot MOK enrollment, writes it to a root-only file
-  (`/etc/shani-installer-mok-password`) inside the target, and never logs
-  it. This replaces the previous hardcoded literal (`shanios`) that was
-  identical on every system and visible in installer logs.
+**MOK enrollment password** — `configure.sh` stages Secure Boot MOK
+enrollment with the well-known literal `shanios`. It has to be a literal
+the user can know ahead of time: MokManager prompts for the confirmation
+password on first boot, so it can't be random-per-install. The literal
+itself is unchanged from the original; what was fixed is that an earlier
+version logged it in plaintext via `log_info`, so anyone reading the
+installer log learned every machine's enrollment password. It is no
+longer logged.
 
 Every `run_in_target()` call (the helper that runs a command inside the
 chroot'd target system) passes installer-provided values — usernames,
@@ -82,6 +83,40 @@ keyboard layouts, locale strings — as real positional arguments rather
 than interpolating them into the command string, specifically so a value
 containing a shell metacharacter can't break out and run arbitrary code
 inside the chroot.
+
+## Known gaps & design rules
+
+**Failure-safety invariants (don't reintroduce):**
+- Every successful mount and LUKS open pushes an undo command
+  (`mount_tracked()`/`_push_cleanup`) onto a chronological stack; `die()`
+  and the `ERR` trap both unwind that stack in reverse (LIFO — children
+  before parents, mapper closed only after whatever was mounted on top of
+  it is gone) before exiting. A normal successful exit never triggers this
+  — both scripts intentionally leave the target mounted for the next stage.
+- EFI signing must verify the signed output *before* it replaces the live
+  file, never after — the live binary must never be observed in a
+  signed-but-invalid state.
+- Any secret-handling change (LUKS passphrase, user password, MOK
+  enrollment password) must be run through the `ps -eo pid,args` /
+  `/proc/*/cmdline` polling pattern concurrently with a real test-harness
+  run; this exact class of bug (argv leak, positional-argument leak via
+  `chroot ... bash -c`) has been found here before.
+
+**Open, not yet independently verified:**
+- `sign_efi_binary()`'s verify-before-replace ordering is verified only
+  for the happy path and the "already signed" fast path. A forced
+  signing-failure path (stub `sbsign` to succeed while producing garbage)
+  has not been re-run since the fix — the ordering fix is correct by
+  construction, but the negative control was not re-executed.
+
+**Cross-repo impact:**
+- These scripts are consumed and tested by `shani-install-media`
+  (`build.sh test install`/`configure`) and packaged by a PKGBUILD in
+  `shani-pkgbuilds` (`os-installer`/`os-installer-git`). A change to an
+  `OSI_*` variable's meaning, a new required variable, or a changed exit
+  code needs the test harness in `shani-install-media` updated to match,
+  and the packaging in `shani-pkgbuilds` checked for anything it assumes
+  about this repo's layout.
 
 ## `bits/part.sfdisk`
 
