@@ -568,17 +568,28 @@ extract_snap_image() {
 # Function: create_swapfile
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
-  local available_mb
+  local available_mb size_mb
   available_mb=$(df -BM /mnt | awk 'NR==2 {print $4}' | sed 's/M//')
 
-  if (( available_mb < SWAPFILE_SIZE )); then
-    log_warn "Insufficient space for swapfile. Available: ${available_mb}MB, Required: ${SWAPFILE_SIZE}MB"
+  # Sized to RAM (what hibernation needs), but never into the space updates
+  # need: shani-deploy refuses to update with less than 10 GB free, and a
+  # RAM-sized swapfile on a small disk (16 GB RAM, 32 GB disk) left 1-5 GB -
+  # no update could ever install. Keep UPDATE_RESERVE_MB (10 GB + 2 GB
+  # headroom) free; below 1 GB of swap, skip it (zram covers swap).
+  local reserve_mb="${UPDATE_RESERVE_MB:-12288}"
+  size_mb=$(( available_mb - reserve_mb ))
+  (( size_mb > SWAPFILE_SIZE )) && size_mb=${SWAPFILE_SIZE}
+  if (( size_mb < 1024 )); then
+    log_warn "No room for a swapfile after keeping ${reserve_mb}MB free for updates (available: ${available_mb}MB)"
     log_info "Skipping swapfile creation. System will use zram for swap."
     return 0
   fi
+  if (( size_mb < SWAPFILE_SIZE )); then
+    log_warn "Swapfile ${size_mb}MB, smaller than RAM (${SWAPFILE_SIZE}MB) to keep ${reserve_mb}MB free for updates - hibernation needs swap >= RAM and may not be available"
+  fi
 
-  log_info "Creating swapfile at /mnt/${SWAPFILE_PATH}"
-  sudo btrfs filesystem mkswapfile --size "${SWAPFILE_SIZE}M" "/mnt/${SWAPFILE_PATH}" || die "Swapfile creation failed"
+  log_info "Creating ${size_mb}MB swapfile at /mnt/${SWAPFILE_PATH} (${available_mb}MB free before)"
+  sudo btrfs filesystem mkswapfile --size "${size_mb}M" "/mnt/${SWAPFILE_PATH}" || die "Swapfile creation failed"
   sudo swapon "/mnt/${SWAPFILE_PATH}" || die "Swapfile activation failed"
 }
 

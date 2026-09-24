@@ -42,7 +42,8 @@ welcome_page:
 # Default: partition_ok: no, min_size: 5
 disk:
   partition_ok: no
-  min_size: 28  # Accounts for actual usable space on 32GB cards
+  min_size: 30  # GB (os-installer: 1000^3). 28 left a fresh install below the
+                # 10 GB an update needs; 30 still accepts media sold as 32 GB
 
 # Disk encryption PIN setup.
 #
