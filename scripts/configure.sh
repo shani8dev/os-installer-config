@@ -583,6 +583,15 @@ setup_autologin_target() {
     if run_in_target "command -v gdm >/dev/null"; then
       log_info "Configuring GDM autologin for ${OSI_USER_USERNAME}"
       run_in_target 'mkdir -p /etc/gdm && printf "[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=%s\n" "$1" > /etc/gdm/custom.conf' "$OSI_USER_USERNAME"
+    elif run_in_target "command -v plasmalogin >/dev/null"; then
+      # Plasma's own login manager (plasma-login-manager; the plasma image has
+      # no sddm). Without this branch a Plasma install fell through to the
+      # getty fallback below: a text-console autologin on tty1 instead of a
+      # graphical one. The daemon reads group [Autologin] (keys User/Session,
+      # mainconfig.kcfg) from /etc/plasmalogin.conf.d/*.conf; Session is the
+      # wayland-sessions/plasma.desktop basename.
+      log_info "Configuring Plasma Login Manager autologin for ${OSI_USER_USERNAME}"
+      run_in_target 'mkdir -p /etc/plasmalogin.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/plasmalogin.conf.d/20-autologin.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v sddm >/dev/null"; then
       log_info "Configuring SDDM autologin for ${OSI_USER_USERNAME}"
       run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_USERNAME"

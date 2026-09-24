@@ -178,6 +178,24 @@ rather than writing in a generic format.
   reached the same code path; skipped only because the test disk didn't
   have enough free space, same as before this fix).
 
+- **Autologin silently fell back to a tty on Plasma installs — FIXED in
+  source (2026-09-24), full harness install still pending.**
+  `setup_autologin_target()` only knew gdm and sddm; the Plasma profile ships
+  `plasma-login-manager` (`/usr/sbin/plasmalogin`), so "log in automatically"
+  wrote a `getty@tty1` agetty drop-in instead. Reproduced by running the
+  extracted `HEAD` function against an Arch target with plasmalogin and no
+  gdm/sddm: it printed "Configuring getty autologin" and wrote the getty
+  drop-in. Added a `plasmalogin` branch (before sddm) that writes
+  `/etc/plasmalogin.conf.d/20-autologin.conf` (`[Autologin] User=… Session=plasma`),
+  with the username passed as `$1`, not interpolated. Same extracted-function
+  test with the fix: file written, `kreadconfig6` reads it back, no getty
+  drop-in, and a hostile username (`$(touch /tmp/PWNED)`) did not execute.
+  **Not yet verified by a real harness install** (`bootstrap -p plasma` with
+  autologin on, then a boot) — do that before calling it done.
+  Related, deliberately unchanged: `varlib_dirs` lists gdm/sddm but not
+  plasmalogin. It doesn't need to, because `/var` is already a persistent
+  overlay, so `/var/lib/plasmalogin` persists without a bind mount.
+
 ## Cross-repo impact — check before calling a fix complete
 
 This repo's scripts are consumed and tested by `shani-install-media`
