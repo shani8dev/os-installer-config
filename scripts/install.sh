@@ -314,6 +314,15 @@ do_partitioning() {
 mount_boot_partition() {
   local efi_device="$1"
   log_info "Mounting EFI partition (${efi_device}) at /mnt/boot/efi"
+  # mkfs.fat wrote the volume label into the FAT superblock but does NOT emit a
+  # block-device uevent, so udev only creates /dev/disk/by-label/<label> from
+  # the on-disk label on its next (re)scan. Force that scan and wait for it
+  # before mounting by label — otherwise the symlink can be missing and mount
+  # fails with "Can't lookup blockdev". Where no udevd is running (this repo's
+  # container test harness), these are harmless no-ops: the by-label symlink is
+  # created there by other means (see shani-testbed/lib/disk.sh).
+  sudo udevadm trigger --action=change "${efi_device}" 2>/dev/null || true
+  sudo udevadm settle 2>/dev/null || sleep 3
   mount_tracked /mnt/boot/efi sudo mount --mkdir "/dev/disk/by-label/${BOOTLABEL}" /mnt/boot/efi \
     || die "EFI partition mount failed"
 }
