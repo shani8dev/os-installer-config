@@ -108,6 +108,17 @@ mount_target() {
   # start fresh with blue. shani-deploy owns slot switching after first boot.
   ACTIVE_SLOT="blue"
 
+  # install.sh formats shani_root (mkfs.btrfs) and shani_boot (mkfs.fat) by
+  # label, but mkfs tools don't emit a block uevent, so udev only creates
+  # /dev/disk/by-label/<label> on a (re)scan. Trigger that scan and wait once
+  # before either by-label mount below — otherwise the symlink can still be
+  # missing and mount fails with "Can't lookup blockdev". Same class of race as
+  # install.sh's ESP mount (which now does this inline). Safe here: configure.sh
+  # only runs once, during install, never on a live booted system. No udevd
+  # (container test harness)? Both lines are harmless no-ops, and the by-label
+  # symlinks are created there by other means (see shani-testbed/lib/disk.sh).
+  sudo udevadm trigger --action=change --subsystem-match=block 2>/dev/null || true
+  sudo udevadm settle 2>/dev/null || sleep 3
   log_info "Mounting active system subvolume (@${ACTIVE_SLOT}) at ${TARGET}"
   mount_tracked "${TARGET}" sudo mount -o "subvol=@${ACTIVE_SLOT}" /dev/disk/by-label/"${ROOTLABEL}" "${TARGET}" || die "Active slot mount failed"
 
