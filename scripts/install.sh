@@ -327,9 +327,43 @@ mount_boot_partition() {
     || die "EFI partition mount failed"
 }
 
+# Function: check_label_clash
+# fstab, configure.sh and the initramfs hooks find root and the ESP by label
+# (shani_root / shani_boot). Another disk that already carries one - an earlier
+# ShaniOS install, e.g. on the internal disk while installing to an external
+# SSD - makes each of those lookups pick either disk, at install and at every
+# boot. Refuse before formatting, and name the device. Never relabel it: it may
+# be someone's working system. Labels this install overwrites don't count: the
+# whole target disk, or in partition mode the two partitions it formats.
+check_label_clash() {
+  local label dev t own="" clashes=()
+  # Everything this install overwrites: the target (whole disk, or the two
+  # partitions) and every device inside it - partitions, an open LUKS mapper.
+  # By lsblk's tree, not by TYPE: a loop or dm parent is not TYPE "disk".
+  if [[ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]]; then t="${ROOT_PARTITION} ${EFI_PARTITION}"
+  else t="${OSI_DEVICE_PATH}"; fi
+  for dev in ${t}; do
+    own+=" $(lsblk -nlpo NAME "$(readlink -f "${dev}")" 2>/dev/null | tr '\n' ' ')"
+  done
+  for label in "${ROOTLABEL}" "${BOOTLABEL}"; do
+    while read -r dev; do
+      [[ -n "${dev}" ]] || continue
+      [[ " ${own} " == *" $(readlink -f "${dev}") "* ]] && continue
+      clashes+=("${dev} (LABEL=${label})")
+    # blkid exits 2 on no match - the normal case; without || true the ERR
+    # trap fired in the substitution's subshell (and ran the cleanup stack)
+    done < <(sudo blkid -o device -t "LABEL=${label}" 2>/dev/null || true)
+  done
+  (( ${#clashes[@]} == 0 )) && return 0
+  log_error "Another disk already has a ShaniOS label: ${clashes[*]}"
+  log_error "ShaniOS finds its disks by these labels, so with both connected either one could be used."
+  die "Disconnect that disk (or remove the old ShaniOS install on it), then run the installer again."
+}
+
 # Function: create_filesystems
 # Format and mount the EFI partition and create the Btrfs filesystem on the root partition.
 create_filesystems() {
+  check_label_clash
   # Format and mount the EFI partition using the global EFI_PARTITION variable.
   log_info "Formatting EFI partition (${EFI_PARTITION}) as FAT32 with label ${BOOTLABEL}"
   sudo mkfs.fat -F32 "${EFI_PARTITION}" -n "${BOOTLABEL}" || die "EFI partition formatting failed"
