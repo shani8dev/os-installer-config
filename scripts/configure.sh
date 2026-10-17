@@ -985,12 +985,23 @@ generate_uki_entry() {
 # Function: generate_loader_conf
 generate_loader_conf() {
   local slot="$1"
-  # Use a glob pattern for the default entry so systemd-boot matches the active
-  # slot regardless of the current tries counter value (+3-0, +2-1, +1-2, +0-3).
-  # A hardcoded +3-0 suffix would stop matching after the first successful boot
-  # decrements the counter, causing systemd-boot to fall back to its own heuristics.
-  # bootctl set-default is intentionally omitted — it requires efivarfs which
-  # is unreliable inside a chroot, and loader.conf already sets the default.
+  # The entry ID is shanios-<slot>.conf — literally this, NOT a glob, and NOT a
+  # +3-0 filename. This comment previously said "use a glob pattern", which is
+  # the one thing that must not be done here: `shanios-deploy.sh`'s
+  # finalize_boot_entries() spells out why, having rejected it deliberately —
+  # neither `shanios-blue+3-0.conf` nor `shanios-blue+*.conf` equals the ID.
+  #
+  # Why the base ID is the durable choice: a tries entry `shanios-blue+3-0.conf`
+  # has entry ID `shanios-blue.conf` (boot.c's boot_entry_parse_tries strips the
+  # +N-M counter and keeps the .conf), so naming the base ID matches the tries
+  # file however many boots have elapsed. A hardcoded +3-0 would stop matching
+  # once the counter changed.
+  #
+  # bootctl set-default is intentionally omitted — it requires efivarfs which is
+  # unreliable inside a chroot, and loader.conf already sets the default. Note
+  # this makes a fresh install differ from a post-deploy machine: shani-deploy
+  # DOES call bootctl set-default (best-effort), which persists
+  # LoaderEntryDefault — and systemd-boot reads that BEFORE loader.conf.
   run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
