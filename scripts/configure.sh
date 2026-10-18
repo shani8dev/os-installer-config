@@ -743,11 +743,22 @@ generate_mok_keys_target() {
 # Function: install_secureboot_components_target
 install_secureboot_components_target() {
   log_info "Installing secure boot components"
+  # Staged and renamed, like every other boot-critical write in this repo.
+  # Lower severity than the loader.conf case - on a FIRST install these paths do
+  # not exist yet, so `cp` creates rather than truncates - but the hazard is the
+  # same shape: a cut mid-copy leaves a PARTIAL file at a path the firmware
+  # reads. BOOTX64.EFI in particular is the fallback bootloader, so a partial
+  # one is exactly the file whose corruption is unrecoverable without a USB
+  # stick. Staging costs one mv and removes the window.
   run_in_target "mkdir -p /boot/efi/EFI/BOOT && \
-    cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI && \
-    cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/mmx64.efi && \
-    cp /etc/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/MOK.der && \
-    cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/grubx64.efi"
+    cp /usr/share/shim-signed/shimx64.efi /boot/efi/EFI/BOOT/.BOOTX64.EFI.tmp && \
+    mv -f /boot/efi/EFI/BOOT/.BOOTX64.EFI.tmp /boot/efi/EFI/BOOT/BOOTX64.EFI && \
+    cp /usr/share/shim-signed/mmx64.efi /boot/efi/EFI/BOOT/.mmx64.efi.tmp && \
+    mv -f /boot/efi/EFI/BOOT/.mmx64.efi.tmp /boot/efi/EFI/BOOT/mmx64.efi && \
+    cp /etc/secureboot/keys/MOK.der /boot/efi/EFI/BOOT/.MOK.der.tmp && \
+    mv -f /boot/efi/EFI/BOOT/.MOK.der.tmp /boot/efi/EFI/BOOT/MOK.der && \
+    cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/efi/EFI/BOOT/.grubx64.efi.tmp && \
+    mv -f /boot/efi/EFI/BOOT/.grubx64.efi.tmp /boot/efi/EFI/BOOT/grubx64.efi"
 
   sign_efi_binary "/boot/efi/EFI/BOOT/grubx64.efi"
 }
