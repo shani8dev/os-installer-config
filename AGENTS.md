@@ -350,3 +350,59 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
 3. **GUI setup assistant consideration (P3, only if human decides).** The CLI-by-design `OSI_*` env-var approach is a deliberate, superior choice — it's what makes the real scripts headlessly testable in `shani-install-media`'s harness. If a GUI is ever wanted, it must be built natively for shani (GTK4, matching `shani-cassini`), NOT ported from garuda's Qt wizard.
 
 4. **Conventional commits + `renovate.json` (P1).** Ecosystem-wide commit convention (item #9) and Renovate (item #8) — minimal for a config repo with no runtime dependencies.
+
+- **First install relies on the same inert `+3-0` tries counter as a deploy
+  does, and `shani-deploy/AGENTS.md` records the counter's inertness only
+  against `finalize_boot_entries()`. The installer has the identical assumption,
+  unwritten. This is the path that explains a machine failing from its very
+  first boot, with no update ever run (found 2026-10-18).**
+
+  `scripts/configure.sh:973-982`, in the function that writes the boot entry for
+  each slot:
+
+      # active_slot gets +3-0 tries — systemd-boot falls back automatically
+      # if installation fails to reach multi-user.target on first boot.
+      # candidate_slot gets plain .conf — stable fallback, no tries needed.
+      if [[ "$slot" == "$active_slot" ]]; then
+        entry_filename="${OS_NAME}-${slot}+3-0.conf"
+      else
+        entry_filename="${OS_NAME}-${slot}.conf"
+      fi
+
+  So a freshly installed machine is given **two** entries: the active slot
+  `shanios-blue+3-0.conf` carrying the default, and the candidate slot
+  `shanios-green.conf` described in the comment as the *"stable fallback"*. The
+  plain entry really is there and really is bootable.
+
+  **The only thing that would ever select it is the tries counter decrementing to
+  zero — and on systemd 261 it never decrements** (systemd/systemd#40405, only
+  257 and earlier confirmed working; `shani-deploy/AGENTS.md` records this
+  observed on a real firmware boot as `triesDone: 0, triesLeft: 3` after
+  booting). So if the first-installed slot cannot reach multi-user.target, the
+  fallback entry is present, correct, and **never chosen**, on every subsequent
+  boot, indefinitely.
+
+  **Why this matters beyond symmetry:** a deploy-time failure and a
+  first-install failure are different bugs with different owners, and only the
+  first was recorded. "Even from the first installation" is only explicable if
+  the installer carries the same assumption — which it does. `configure.sh`
+  deliberately omits `bootctl set-default` (unreliable efivarfs in a chroot), so
+  on a fresh machine loader.conf's `default` is the deciding source; there is
+  no `LoaderEntryDefault` to outrank it, which means the dracut hook's
+  loader.conf rewrite **is** effective here — but the hook's guard requires a
+  pre-existing `boot_hard_failure` marker and a default carrying a tries
+  counter, and on a first-install failure the marker is written by that same
+  boot and only consumed by the next one.
+
+  **Net: a first-install hard failure needs two reboots to recover, by which
+  point both reboots were black.** Same structural window as a deploy, for the
+  same reason, and it is a property of the platform rather than of any one
+  script.
+
+  **Fixing this is not "make the tries counter work" — it is inert upstream and
+  cannot be made to work from here.** The options are to stop depending on it
+  (default the *proven* slot and select the candidate explicitly, which cannot
+  be done on a first install with nothing proven yet), or to make the fallback
+  reachable by a mechanism that does work on 261. Both are design decisions for
+  a human, and neither is confined to this file: the identical assumption is in
+  `shani-deploy/scripts/shani-deploy.sh`'s `finalize_boot_entries()`.
