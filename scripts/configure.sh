@@ -961,24 +961,46 @@ generate_uki_entry() {
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
 
-  # Write the boot entry — active slot gets +3-0 tries suffix so systemd-boot
-  # automatically falls back if the new installation fails to boot.
-  # Candidate slot gets a plain entry (no tries) as the stable fallback.
-  # This matches exactly what shani-deploy's finalize_boot_entries produces
-  # so there are no orphaned plain .conf files after the first deploy.
+  # Write the boot entry. Both slots get a PLAIN entry — see the note at the
+  # `entry_filename` assignment below for why there is deliberately no `+N-M`
+  # tries suffix here, which is a behaviour change from earlier revisions and is
+  # the opposite of what this comment used to claim.
+  #
+  # The two agree with each other by design: a first install and the first
+  # deploy after it must not leave orphaned `+3-0` files behind, because the
+  # cleanup line below only removes `+*.conf` for the slot being written.
   # Clean up any stale entries for this slot before writing — matches
   # the cleanup shani-deploy's finalize_boot_entries performs.
   run_in_target "rm -f ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}+*.conf ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf" 2>/dev/null || true
 
-  # active_slot gets +3-0 tries — systemd-boot falls back automatically
-  # if installation fails to reach multi-user.target on first boot.
-  # candidate_slot gets plain .conf — stable fallback, no tries needed.
-  local entry_filename
-  if [[ "$slot" == "$active_slot" ]]; then
-    entry_filename="${OS_NAME}-${slot}+3-0.conf"
-  else
-    entry_filename="${OS_NAME}-${slot}.conf"
-  fi
+  # PLAIN entries on both slots - no `+N-M` tries suffix.
+  #
+  # This used to give the active slot `+3-0`, on the stated expectation that
+  # "systemd-boot falls back automatically if installation fails to reach
+  # multi-user.target on first boot". That expectation is wrong twice over on
+  # this platform, and the second half is worse than the counter doing nothing:
+  #
+  #   1. The counter does not engage. systemd-boot does not decrement
+  #      tries-left here (systemd/systemd#40405), so the fallback it was
+  #      written for never happens either way.
+  #
+  #   2. **It also can never be cleared, so it would eventually be marked bad
+  #      and stay that way.** A `+3-0` entry becomes `+3-3` only when
+  #      `systemd-bless-boot good` renames it, and that runs behind
+  #      `ConditionPathExists=.../LoaderBootCountPath-4a67b082-...`, which the
+  #      loader sets only for an entry booted WITH counting in effect. Measured
+  #      on this image: the variable is absent, so bless-boot is skipped. The
+  #      counter therefore counts down to zero on a perfectly healthy install,
+  #      the entry is marked bad, and systemd-boot stops selecting it - the
+  #      machine that installed correctly stops booting the slot it installed,
+  #      with no failure anywhere to explain it.
+  #
+  # So writing a counter that can be set but never unset is worse than writing
+  # none: without one, nothing is ever marked bad. The fallback is the dracut
+  # pre-mount hook, whose EFI clearing now works (it needs `chattr -i`;
+  # efivarfs nodes are S_IMMUTABLE since ed8b0de and a bare `rm -f` returns
+  # EPERM, which made the hook a silent no-op).
+  local entry_filename="${OS_NAME}-${slot}.conf"
   run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${entry_filename}"
 }
 
