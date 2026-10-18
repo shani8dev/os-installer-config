@@ -406,3 +406,25 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
   reachable by a mechanism that does work on 261. Both are design decisions for
   a human, and neither is confined to this file: the identical assumption is in
   `shani-deploy/scripts/shani-deploy.sh`'s `finalize_boot_entries()`.
+
+- **Checked 2026-10-18 for the immutable-efivarfs unlink bug, and this repo is
+  NOT affected — recorded so the next person does not re-derive it.**
+
+  `shani-deploy/scripts/shani-deploy.sh` and the dracut pre-mount hook both
+  cleared `LoaderEntry{SysFail,OneShot,Preferred}` with a bare `rm -f`, which is
+  a guaranteed no-op: since ed8b0de efivarfs nodes are `S_IMMUTABLE` unless on
+  a small allowlist of standardised variables, and unlinking an immutable inode
+  returns EPERM. Both now `chattr -i` first and report survivors.
+
+  **`configure.sh` does not have this bug, and the reason is structural rather
+  than lucky:** its only efivarfs use is `mokutil --sb-state` and MOK staging
+  (`setup_secureboot()`, ~:1041-1069). It never unlinks an EFI variable, so
+  there is no `rm -f` on an immutable node to fail. Verified by grepping for
+  `efivars|LoaderEntry|rm -f|set-default` across the script — the only
+  efivarfs-adjacent writes are `mount_tracked ... rbind` and the mokutil calls.
+
+  Worth recording because `configure.sh` *does* share the other defect in this
+  area — the `+3-0` tries fallback that never engages (see the entry above) —
+  so "the installer was fixed" would otherwise read as "the installer has no
+  efivarfs problems left". It has one; it is a different one, and the two are
+  independent.
