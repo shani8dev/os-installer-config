@@ -944,7 +944,7 @@ generate_uki_entry() {
 
   run_in_target "echo '${cmdline}' > ${cmdfile}"
 
-  # active_slot   = blue, boots first, Active label, +3-0 tries
+  # active_slot   = blue, boots first, Active label, `+3-0` marked entry
   # candidate_slot = green, mirror, Candidate label, plain .conf
   local suffix=""
   if [[ "$slot" == "$active_slot" ]]; then
@@ -961,46 +961,51 @@ generate_uki_entry() {
   run_in_target "dracut --force --uefi --kver ${kernel_version} --kernel-cmdline \"${cmdline}\" ${uki_path}"
   sign_efi_binary "${uki_path}"
 
-  # Write the boot entry. Both slots get a PLAIN entry — see the note at the
-  # `entry_filename` assignment below for why there is deliberately no `+N-M`
-  # tries suffix here, which is a behaviour change from earlier revisions and is
-  # the opposite of what this comment used to claim.
-  #
-  # The two agree with each other by design: a first install and the first
-  # deploy after it must not leave orphaned `+3-0` files behind, because the
-  # cleanup line below only removes `+*.conf` for the slot being written.
-  # Clean up any stale entries for this slot before writing — matches
-  # the cleanup shani-deploy's finalize_boot_entries performs.
+  # Clean up any stale entries for this slot before writing - matches
+  # the cleanup shani-deploy's finalize_boot_entries performs. Both the marked
+  # and plain forms are removed so a rename cannot leave an orphan behind.
   run_in_target "rm -f ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}+*.conf ${UKI_BOOT_ENTRY}/${OS_NAME}-${slot}.conf" 2>/dev/null || true
 
-  # PLAIN entries on both slots - no `+N-M` tries suffix.
+  # The ACTIVE slot carries a `+3-0` suffix; the candidate is a plain entry.
   #
-  # This used to give the active slot `+3-0`, on the stated expectation that
-  # "systemd-boot falls back automatically if installation fails to reach
-  # multi-user.target on first boot". That expectation is wrong twice over on
-  # this platform, and the second half is worse than the counter doing nothing:
+  # The suffix is a MARKER, not a working counter - but it is NOT decoration,
+  # and dropping it disarms the only recovery mechanism this platform has.
+  # Both halves of that are measured, not assumed:
   #
-  #   1. The counter does not engage. systemd-boot does not decrement
-  #      tries-left here (systemd/systemd#40405), so the fallback it was
-  #      written for never happens either way.
+  #   1. The COUNTING is inert. On a real firmware boot of a machine whose ESP
+  #      carried `shanios-green+3-0.conf` and BOOTED IT (rootflags=subvol=@green),
+  #      LoaderBootCountPath was ABSENT. systemd-boot does not decrement
+  #      tries-left here (systemd/systemd#40405), and systemd-bless-boot is gated
+  #      behind ConditionPathExists=.../LoaderBootCountPath, so the entry is
+  #      never sealed either. It never falls back on its own.
   #
-  #   2. **It also can never be cleared, so it would eventually be marked bad
-  #      and stay that way.** A `+3-0` entry becomes `+3-3` only when
-  #      `systemd-bless-boot good` renames it, and that runs behind
-  #      `ConditionPathExists=.../LoaderBootCountPath-4a67b082-...`, which the
-  #      loader sets only for an entry booted WITH counting in effect. Measured
-  #      on this image: the variable is absent, so bless-boot is skipped. The
-  #      counter therefore counts down to zero on a perfectly healthy install,
-  #      the entry is marked bad, and systemd-boot stops selecting it - the
-  #      machine that installed correctly stops booting the slot it installed,
-  #      with no failure anywhere to explain it.
+  #      Note what this does NOT mean, because an earlier revision of this
+  #      comment asserted the opposite and was wrong: a frozen counter cannot
+  #      run out, so the entry is never marked bad. There is no permanent
+  #      self-demotion here. Writing the counter costs nothing.
   #
-  # So writing a counter that can be set but never unset is worse than writing
-  # none: without one, nothing is ever marked bad. The fallback is the dracut
-  # pre-mount hook, whose EFI clearing now works (it needs `chattr -i`;
-  # efivarfs nodes are S_IMMUTABLE since ed8b0de and a bare `rm -f` returns
-  # EPERM, which made the hook a silent no-op).
-  local entry_filename="${OS_NAME}-${slot}.conf"
+  #   2. The MARKER is the ONLY trigger the failover hook has. The dracut
+  #      pre-mount hook guards on "the current default carries a tries counter,
+  #      which is exactly how a deploy marks an unproven candidate"
+  #      (shanios-boot-failure-hook.sh). With no suffix the hook declines to
+  #      act: it will not rewrite loader.conf, will not arm the in-boot
+  #      recovery unit, and the machine stays black across every reboot.
+  #
+  # Removing this suffix was tried, on the theory that an inert counter is
+  # dead weight. A real boot of a real ESP written by this script with the
+  # suffix removed produced, verbatim:
+  #
+  #     shanios-hook: prior failure (@unknown) but default 'shanios-green.conf'
+  #     carries no tries counter - not an unproven candidate, leaving it
+  #
+  # That is the reported symptom - a machine broken from its very first
+  # installation - caused by the change that was meant to help it. An inert
+  # counter is harmless. Its absence is not.
+  if [[ "$slot" == "$active_slot" ]]; then
+    entry_filename="${OS_NAME}-${slot}+3-0.conf"
+  else
+    entry_filename="${OS_NAME}-${slot}.conf"
+  fi
   run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/${entry_filename}"
 }
 
@@ -1024,6 +1029,27 @@ generate_loader_conf() {
   # this makes a fresh install differ from a post-deploy machine: shani-deploy
   # DOES call bootctl set-default (best-effort), which persists
   # LoaderEntryDefault — and systemd-boot reads that BEFORE loader.conf.
+  # The default names the BASE ID (`${OS_NAME}-${slot}.conf`), not the marked
+  # filename, and that is deliberate - and now verified against upstream rather
+  # than assumed, because this workspace contained two comments asserting
+  # opposite things about it.
+  #
+  # systemd commit 4301ad0 ("boot: Strip boot counter from entry id", fixes
+  # #38813, merged 2025-09-11) changed `boot_entry_parse_tries()` to SET
+  # `entry->id` with the counter removed:
+  #
+  #     entry->id = xasprintf("%.*ls%ls", (int) prefix_len - 1, file, suffix);
+  #
+  # Before it, the id was the whole filename and `+N-M` stayed in it. So on the
+  # systemd this image ships (v262) the entry `shanios-blue+3-0.conf` has
+  # id `shanios-blue.conf`, and loader.conf's default is matched against the id
+  # with efi_fnmatch - so the base ID is what matches, and writing the marked
+  # filename would match NOTHING and silently fall through to "the first
+  # suitable entry".
+  #
+  # I wrote the opposite of this (a marked default), on the strength of a
+  # comment in the dracut hook that predates 4301ad0 and describes pre-fix
+  # behaviour. That change is reverted here.
   run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
 }
 
