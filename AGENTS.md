@@ -399,6 +399,47 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
   same reason, and it is a property of the platform rather than of any one
   script.
 
+  **SETTLED 2026-10-18 — and this entry's own diagnosis was half right in a way
+  that mattered.** It says below that a first-install failure "needs two reboots
+  to recover". Earlier the same day I changed this script (`9ed3e34`) to write
+  plain entries on both slots, reasoning that the counter is frozen and so is dead
+  weight — and thereby made it **unrecoverable**, not two-reboot. A real boot of
+  a real ESP written by that version:
+
+      shanios-hook: prior failure (@unknown) but default 'shanios-blue.conf'
+      carries no tries counter - not an unproven candidate, leaving it
+
+  which is the reported symptom — broken from the very first installation —
+  produced by the change meant to help it.
+
+  **The suffix is a MARKER, not a counter.** The counting is frozen; the
+  conclusion does not follow. The dracut hook's failover guard is precisely
+  *"the current default carries a tries counter, which is exactly how a deploy
+  marks an unproven candidate"*, so removing it disarms the only recovery a first
+  install has — and a first install is precisely where there is no deploy and
+  nothing else in the chain. Restored (`27cf14b`).
+
+  Two corrections to the reasoning that justified the change:
+
+  1. It claimed the counter "would count down to zero on a perfectly healthy
+     install, be marked bad, and stay that way". It cannot: a frozen counter
+     never runs out, so no entry is ever marked bad. That harm was imagined, and
+     it was part of the justification.
+  2. It claimed a `+3-0` "cannot be cleared, so it would eventually be marked
+     bad" — same error, and it is what made the removal look safe.
+
+  `loader.conf`'s `default` keeps naming the **base ID**, now verified against
+  upstream rather than by habit: systemd `4301ad0` strips the counter from
+  `entry->id`, so `shanios-blue+3-0.conf` has id `shanios-blue.conf` and the base
+  ID is the spelling that matches. Writing the marked filename matches nothing.
+  This line was briefly changed the other way, on the strength of a comment in
+  the dracut hook that predates `4301ad0`; it is reverted.
+
+  What remains true from the original entry, and is now measured rather than
+  argued: the counter cannot be made to work from here (it is inert upstream), a
+  first install has nothing proven to default to, and the reachable fallback is
+  the dracut hook — which now works, end to end, on a first-install ESP.
+
   **Fixing this is not "make the tries counter work" — it is inert upstream and
   cannot be made to work from here.** The options are to stop depending on it
   (default the *proven* slot and select the candidate explicitly, which cannot
