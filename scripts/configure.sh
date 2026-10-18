@@ -1050,7 +1050,21 @@ generate_loader_conf() {
   # I wrote the opposite of this (a marked default), on the strength of a
   # comment in the dracut hook that predates 4301ad0 and describes pre-fix
   # behaviour. That change is reverted here.
-  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/loader.conf"
+  # Written to a temp file in the SAME directory and renamed into place, not
+  # written straight to loader.conf.
+  #
+  # This installer runs on a machine that may lose power at any instant, and
+  # `> loader.conf` truncates before it writes: a cut during this printf leaves a
+  # partial file. There is no deploy and no prior loader.conf to fall back on,
+  # so a truncated default means systemd-boot finds no `default` line and falls
+  # through to "the first suitable entry" - which on a two-slot ESP may well be
+  # the candidate. That is the reported failure mode, reached by cutting power
+  # during installation rather than during an update.
+  #
+  # `rename(2)` within one directory is atomic, so the file on the ESP is always
+  # either absent or complete. Same reason shani-deploy stages both of its boot
+  # entries through a temp before renaming them.
+  run_in_target "mkdir -p /boot/efi/loader && printf 'default ${OS_NAME}-${slot}.conf\ntimeout 5\nconsole-mode max\neditor 0\nauto-entries 0\nbeep 0\n' > /boot/efi/loader/.loader.conf.tmp && mv -f /boot/efi/loader/.loader.conf.tmp /boot/efi/loader/loader.conf"
 }
 
 # Helper: _mokutil_stage_via_hash
