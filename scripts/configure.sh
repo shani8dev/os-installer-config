@@ -1017,7 +1017,7 @@ generate_uki_entry() {
   else
     entry_filename="${OS_NAME}-${slot}.conf"
   fi
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n'   # Staged and renamed, like loader.conf above and like shani-deploy's own
+  # Staged and renamed, like loader.conf above and like shani-deploy's own
   # entries. This one was a plain truncating redirect, found by
   # shani-testbed/tests/critical-writes.sh rather than by a boot: a cut during
   # this printf leaves a PARTIAL boot entry on the ESP, and systemd-boot reads
