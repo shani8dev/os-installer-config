@@ -488,6 +488,7 @@ create_subvolumes() {
     # Display Managers
     "varlib/gdm"
     "varlib/sddm"
+    "varlib/plasmalogin"
     # Audio & Peripherals
     "varlib/colord"
     "varlib/pipewire"

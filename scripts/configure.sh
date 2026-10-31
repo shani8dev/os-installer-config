@@ -235,6 +235,7 @@ mount_overlay() {
     # Display Managers
     "gdm"
     "sddm"
+    "plasmalogin"
     # Audio & Peripherals
     "colord"
     "pipewire"
