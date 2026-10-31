@@ -909,7 +909,7 @@ generate_uki_entry() {
     encryption_params=" rd.luks.uuid=${LUKS_UUID} rd.luks.name=${LUKS_UUID}=${ROOTLABEL} rd.luks.options=${LUKS_UUID}=tpm2-device=auto"
   fi
 
-  local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+  local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf lockdown=confidentiality rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # Append keyboard mapping parameter if OSI_KEYBOARD_LAYOUT is provided.
   # Use parse_keyboard_layout to extract the vconsole_map (primary layout only)
