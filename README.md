@@ -1,10 +1,11 @@
 # os-installer-config
 
-Distro-specific configuration for GNOME's
-[os-installer](https://gitlab.gnome.org/p3732/os-installer) — the GTK4/
-libadwaita installer framework Shanios ships (built via the
+Distro-specific configuration for the
+[ShaniOS Installer](https://github.com/shani8dev/os-installer) — our fork of
+GNOME's os-installer, the GTK4/libadwaita installer framework Shanios ships
+(built via the
 [os-installer-git](https://github.com/shani8dev/shani-pkgbuilds/tree/main/os-installer-git)
-PKGBUILD, which patches upstream for Shanios-specific needs). This repo is
+PKGBUILD, which builds the fork directly — no patch stack). This repo is
 installed to `/etc/os-installer/` and drives what the installer UI shows,
 what happens when a user actually confirms an install, and what the
 resulting system looks like on first boot.
@@ -29,8 +30,8 @@ they behave. Notable Shanios-specific choices, and why:
   confirmation required.
 - **`user.min_password_length: 1`** — deliberately unenforced; Shanios
   doesn't gate on password strength at install time. (Also governs the
-  root-password field added by the `add-root-password.patch` in
-  os-installer-git, which mirrors this same setting for consistency.)
+  root-password field the ShaniOS fork adds, which mirrors this same setting
+  for consistency.)
 - **`internet`** — `connection_required: no` disables the network check so
   offline installs work; `checker_url` sets the probe URL when a check is
   needed.
