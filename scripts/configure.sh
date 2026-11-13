@@ -37,31 +37,37 @@ mount_tracked() {
 trap 'ec=$?; echo "[CONFIG][ERROR] Error at line ${LINENO}: ${BASH_COMMAND}" >&2; run_cleanup_stack; exit "$ec"' ERR
 
 ### Configuration variables
-OS_NAME="shanios"
-ROOTLABEL="shani_root"
-BOOTLABEL="shani_boot"
-CMDLINE_FILE_CURRENT="/etc/kernel/install_cmdline_blue"
-CMDLINE_FILE_CANDIDATE="/etc/kernel/install_cmdline_green"
-UKI_BOOT_ENTRY="/boot/efi/loader/entries"
+OS_NAME="${OSI_OS_NAME:-shanios}"
+ROOTLABEL="${OSI_ROOT_LABEL:-shani_root}"
+BOOTLABEL="${OSI_BOOT_LABEL:-shani_boot}"
+CMDLINE_FILE_CURRENT="${OSI_KERNEL_CMDLINE_CURRENT:-/etc/kernel/install_cmdline_blue}"
+CMDLINE_FILE_CANDIDATE="${OSI_KERNEL_CMDLINE_CANDIDATE:-/etc/kernel/install_cmdline_green}"
+UKI_BOOT_ENTRY="${OSI_UKI_BOOT_ENTRIES:-/boot/efi/loader/entries}"
+
+# The installer exports skip_user/skip_region (config) as 1/0; a direct run
+# may not have them, so fall back to the config file. Accept yes/true too.
+_is_yes() { [[ "${1:-}" == "1" || "${1:-}" == "yes" || "${1:-}" == "true" ]]; }
 
 # Read installer configuration for skip flags
-CONFIG_FILE="/etc/os-installer/config.yaml"
-if [[ -f "${CONFIG_FILE}" ]]; then
+CONFIG_FILE="${CONFIG_FILE:-/etc/os-installer/config.yaml}"
+SKIP_USER="${OSI_SKIP_USER:-}"
+SKIP_REGION="${OSI_SKIP_REGION:-}"
+if [[ -z "${SKIP_USER}" || -z "${SKIP_REGION}" ]] && [[ -f "${CONFIG_FILE}" ]]; then
   # Assumes a simple YAML with lines like "skip_user: yes"
-  SKIP_USER=$(grep -E '^skip_user:' "${CONFIG_FILE}" | awk '{print $2}')
-  SKIP_REGION=$(grep -E '^skip_region:' "${CONFIG_FILE}" | awk '{print $2}')
+  [[ -z "${SKIP_USER}" ]] && SKIP_USER=$(grep -E '^skip_user:' "${CONFIG_FILE}" | awk '{print $2}')
+  [[ -z "${SKIP_REGION}" ]] && SKIP_REGION=$(grep -E '^skip_region:' "${CONFIG_FILE}" | awk '{print $2}')
+fi
 
-  if [[ "${SKIP_USER}" == "yes" ]]; then
-    export OSI_USER_NAME=""
-    export OSI_USER_PASSWORD=""
-    export OSI_USER_AUTOLOGIN=""
-  fi
+if _is_yes "${SKIP_USER}"; then
+  export OSI_USER_NAME=""
+  export OSI_USER_PASSWORD=""
+  export OSI_USER_AUTOLOGIN=""
+fi
 
-  if [[ "${SKIP_REGION}" == "yes" ]]; then
-    export OSI_LOCALE=""
-    export OSI_FORMATS=""
-    export OSI_TIMEZONE=""
-  fi
+if _is_yes "${SKIP_REGION}"; then
+  export OSI_LOCALE=""
+  export OSI_FORMATS=""
+  export OSI_TIMEZONE=""
 fi
 
 
@@ -580,6 +586,12 @@ setup_user_target() {
     else
       log_warn "No user password provided, user account created without a password."
     fi
+
+    # Chronoa model storage lives on the @shani-chronoa subvolume mounted at
+    # /var/lib/shani-chronoa. It must be writable by the primary user so the
+    # setup wizard can download models there without root.
+    run_in_target 'chown -R "$1:$1" /var/lib/shani-chronoa' "$OSI_USER_USERNAME" \
+      || log_warn "Could not chown /var/lib/shani-chronoa; models may need manual permission fix"
   else
     log_info "User name variable not provided, skipping user configuration."
   fi
@@ -1103,8 +1115,24 @@ generate_loader_conf() {
 # `mokutil --generate-hash` call below.
 _mokutil_stage_via_hash() {
     local der_file="$1"
-    local mok_password="shanios"
 
+    # The installer chooses how the one-time MokManager password is set:
+    #   OSI_MOK_ROOT_PW=1  the installed system's root password, read from
+    #                      the target's /etc/shadow by mokutil itself
+    #   otherwise          a separate password the user typed on the
+    #                      Secure Boot page (default: the historical one)
+    # Both are only a hash in the firmware's MokManager prompt; neither is
+    # stored on the installed system.
+    if [[ "${OSI_MOK_ROOT_PW:-0}" == "1" ]]; then
+        if run_in_target "mokutil --import '${der_file}' --root-pw >/dev/null 2>&1"; then
+            log_info "MOK enrollment staged — confirm with the root password in MokManager on first boot"
+        else
+            log_warn "mokutil --root-pw staging failed — MOK.der is present on the ESP for manual enrollment"
+        fi
+        return 0
+    fi
+
+    local mok_password="${OSI_MOK_PASSWORD:-shanios}"
     if run_in_target '
         set -e
         set +x
@@ -1122,6 +1150,12 @@ _mokutil_stage_via_hash() {
 setup_secureboot() {
     local mok_der="/etc/secureboot/keys/MOK.der"
     local efivars="/sys/firmware/efi/efivars"
+
+    # The installer's Secure Boot page can turn enrollment off entirely.
+    if [[ "${OSI_MOK_ENROLL:-1}" == "0" ]]; then
+        log_info "MOK enrollment disabled by the installer"
+        return 0
+    fi
 
     # Check for UEFI system
     if [[ ! -d "/sys/firmware/efi" ]]; then
@@ -1154,6 +1188,24 @@ setup_secureboot() {
 }
 
 
+# Function: setup_tpm
+# The installer's TPM page records the choice. Enrollment itself needs the
+# booted installed system (gen-efi enroll-tpm2 owns the PCR policy), because
+# the LUKS mapper and the final PCRs only exist after the installed boot.
+# The cmdline already carries tpm2-device=auto for every encrypted install,
+# so enrolling the TPM2 slot is all that is left.
+setup_tpm() {
+    if ! _is_yes "${OSI_USE_TPM:-0}"; then
+        log_info "TPM auto-unlock not requested"
+        return 0
+    fi
+
+    log_info "TPM auto-unlock requested — finish after first boot with: sudo gen-efi.sh enroll-tpm2"
+    run_in_target "mkdir -p /etc/shani && printf 'use_tpm=1\n' > /etc/shani/tpm2-enroll" \
+        || log_warn "Could not record the TPM choice in /etc/shani/tpm2-enroll"
+    return 0
+}
+
 # Main configuration function
 main() {
   mount_target
@@ -1164,8 +1216,8 @@ main() {
   setup_machine_id_target
   setup_keyboard_target
 
-  # If SKIP_REGION is set to "yes", skip locale, formats, and timezone configuration.
-  if [[ "${SKIP_REGION:-}" == "yes" ]]; then
+  # If SKIP_REGION is set, skip locale, formats, and timezone configuration.
+  if _is_yes "${SKIP_REGION:-}"; then
     log_info "Skipping locale, keyboard, and timezone configuration as per config."
   else
     setup_locale_target
@@ -1173,8 +1225,8 @@ main() {
     setup_timezone_target
   fi
 
-  # If SKIP_USER is set to "yes", skip user configuration.
-  if [[ "${SKIP_USER:-}" == "yes" ]]; then
+  # If SKIP_USER is set, skip user configuration.
+  if _is_yes "${SKIP_USER:-}"; then
     log_info "Skipping user configuration as per config."
   else
     setup_user_target
@@ -1217,6 +1269,7 @@ main() {
   generate_uki_entry "${candidate_slot}" "${active_slot}"
   generate_loader_conf "${active_slot}"
 
+  setup_tpm
   setup_secureboot
   log_info "Configuration completed successfully!"
 }

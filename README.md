@@ -28,20 +28,30 @@ they behave. Notable Shanios-specific choices, and why:
   either — `desktop` is never set in this file.
 - **`disk_encryption`** — LUKS is offered but not forced, with PIN
   confirmation required.
+- **`secure_boot`** — not set, so `offered: auto`: the Secure Boot page
+  appears only on UEFI. It stages MOK enrollment and takes the one-time
+  MokManager password (a separate one, or the root password via
+  `mokutil --root-pw`; `mok_password_min_length` is the minimum for the
+  separate one).
+- **`tpm`** — not set, so `offered: auto`: the TPM page appears only when a
+  TPM is present. It records that the encrypted disk should unlock with the
+  TPM; enrollment itself is done after first boot with
+  `gen-efi.sh enroll-tpm2` (the installer cannot seal against the installed
+  system's final PCRs).
+- **`install_policy`** — not set, so the installer's defaults are used: the
+  ShaniOS labels, btrfs subvolume list, image directory, swapfile path and
+  boot-entry paths. Set a key here only to override one.
 - **`user.min_password_length: 1`** — deliberately unenforced; Shanios
   doesn't gate on password strength at install time. (Also governs the
   root-password field the ShaniOS fork adds, which mirrors this same setting
-  for consistency.)
+  for consistency, and is exported as `OSI_MIN_PASSWORD_LENGTH`.)
 - **`internet`** — `connection_required: no` disables the network check so
   offline installs work; `checker_url` sets the probe URL when a check is
   needed.
 - **`welcome_page`** — `logo` points to the Shanios logo, `text` is the
   markdown shown on the welcome screen, and `usage: yes` enables the page.
-- **`disk.min_size: 28`** — minimum target disk size in GiB, set to match
+- **`disk.min_size: 30`** — minimum target disk size in GB, set to match
   actual usable space on Shanios's 32GB cards.
-- **`commands`** — overrides the external programs the installer calls:
-  `browser` (default `firefox`), `disks` (`gnome-disks`), `reboot`
-  (`shutdown -r now`), and `wifi` (`gnome-control-center wifi`).
 
 Any config key not listed here that's actually read by the installer keeps
 upstream's default — see os-installer's own `src/core/config.py` for the
@@ -54,14 +64,19 @@ Run in order by os-installer, each receiving `OSI_*` environment variables
 that this repo's scripts consume:
 
 - **`prepare.sh`** — runs early, while the user is still on the welcome/
-  disk pages. Only checks the invoking user is in `wheel`/`sudo`.
+  disk pages. Checks the invoking user is in `wheel`/`sudo` (the installer
+  checks this too, before starting the first script, so a direct run stays
+  safe).
 - **`install.sh`** — disk partitioning and filesystem layout. Partitions
   the target disk per `bits/part.sfdisk` (a 2-partition GPT layout: a 1GiB
   FAT32 ESP, then a Btrfs root taking the rest), sets up LUKS if requested,
   creates the Btrfs subvolume structure, and extracts the root image as
   `@blue`/`@green`-ready snapshots for the blue-green deployment model
   `shani-deploy` uses post-install, plus dedicated `@flatpak` and `@snapd`
-  subvolumes for flatpak/snap data.
+  subvolumes for flatpak/snap data. Labels, the subvolume list, the image
+  directory and image names, the swapfile path and the partition layout come
+  from the installer (`OSI_ROOT_LABEL`, `OSI_BTRFS_SUBVOLUMES`,
+  `OSI_IMAGE_DIR`, …, with the old literals as fallbacks).
 - **`configure.sh`** — the largest script: hostname, machine-id, keyboard
   layout (parses `OSI_KEYBOARD_LAYOUT` into vconsole + X11 keymap fields),
   locale/timezone/user account setup (all currently unreachable given
@@ -69,14 +84,29 @@ that this repo's scripts consume:
   re-enables them), root password, Plymouth theme, firewall rules,
   Secure Boot MOK key generation and enrollment, LUKS crypttab, and the
   initial UKI + boot entry generation for the freshly-installed slot.
-**MOK enrollment password** — `configure.sh` stages Secure Boot MOK
-enrollment with the well-known literal `shanios`. It has to be a literal
-the user can know ahead of time: MokManager prompts for the confirmation
-password on first boot, so it can't be random-per-install. The literal
-itself is unchanged from the original; what was fixed is that an earlier
-version logged it in plaintext via `log_info`, so anyone reading the
-installer log learned every machine's enrollment password. It is no
-longer logged.
+  `skip_user`/`skip_region` come from the installer as `OSI_SKIP_*`; the
+  kernel cmdline files and UKI entry directory come from
+  `OSI_KERNEL_CMDLINE_*` / `OSI_UKI_BOOT_ENTRIES`.
+- **`validate-config.sh`** — checks the YAML, the referenced scripts and the
+  top-level keys against the installer's own config schema.
+
+**MOK enrollment password** — two modes, chosen on the installer's Secure
+Boot page. Either the user types a one-time password (minimum length from
+`secure_boot.mok_password_min_length`, exported as `OSI_MOK_PASSWORD`), or
+the installer uses the root password with `mokutil --root-pw` (exported as
+`OSI_MOK_ROOT_PW=1`; mokutil reads the hash from the target's `/etc/shadow`,
+so a root password must be set). Either way MokManager asks for it once on
+the next boot, and it is never stored on the installed system. The literal
+`shanios` remains the fallback for a direct, non-installer run.
+
+**TPM** — the installer's TPM page exports `OSI_USE_TPM=1` when the user
+wants the encrypted disk to unlock with the TPM. `configure.sh` records the
+choice in `/etc/shani/tpm2-enroll` and the cmdline already carries
+`tpm2-device=auto` for every encrypted install, so the remaining step is
+enrolling the TPM2 slot after first boot:
+`sudo gen-efi.sh enroll-tpm2` (PCR 0+7 with Secure Boot, 0 without). It
+cannot be done during install: `gen-efi` needs the booted system's LUKS
+mapper and final PCRs.
 
 Every `run_in_target()` call (the helper that runs a command inside the
 chroot'd target system) passes installer-provided values — usernames,

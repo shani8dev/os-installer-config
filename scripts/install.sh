@@ -204,26 +204,35 @@ check_env() {
 check_env
 
 ### Configuration variables
-OS_NAME="shanios"
-OSIDIR="/etc/os-installer"
-PART_LAYOUT="${OSIDIR}/bits/part.sfdisk"
-ROOTLABEL="shani_root"
-BOOTLABEL="shani_boot"
-BTRFS_TOP_OPTS="defaults,noatime,compress=zstd,space_cache=v2,autodefrag"
+# The installer owns the distro's install policy (config: install_policy) and
+# exports it; the ${VAR:-default} keeps this script working with an installer
+# that predates the export (and with a direct, non-installer run).
+OS_NAME="${OSI_OS_NAME:-shanios}"
+OSIDIR="${OSIDIR:-/etc/os-installer}"
+PART_LAYOUT="${OSI_PARTITION_LAYOUT:-${OSIDIR}/bits/part.sfdisk}"
+ROOTLABEL="${OSI_ROOT_LABEL:-shani_root}"
+BOOTLABEL="${OSI_BOOT_LABEL:-shani_boot}"
+BTRFS_TOP_OPTS="${OSI_BTRFS_TOP_OPTS:-defaults,noatime,compress=zstd,space_cache=v2,autodefrag}"
 
 # Source image paths (Btrfs send streams)
-ROOTFSZST_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/rootfs.zst"
-FLATPAKFS_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/flatpakfs.zst"
-SNAPFS_SOURCE="/run/archiso/bootmnt/${OS_NAME}/x86_64/snapfs.zst"
+IMAGE_DIR="${OSI_IMAGE_DIR:-/run/archiso/bootmnt/${OS_NAME}/x86_64}"
+ROOTFSZST_SOURCE="${IMAGE_DIR}/${OSI_ROOTFS_IMAGE:-rootfs.zst}"
+FLATPAKFS_SOURCE="${IMAGE_DIR}/${OSI_FLATPAK_IMAGE:-flatpakfs.zst}"
+SNAPFS_SOURCE="${IMAGE_DIR}/${OSI_SNAP_IMAGE:-snapfs.zst}"
+AIMODELSFS_SOURCE="${IMAGE_DIR}/${OSI_AI_MODELS_IMAGE:-aimodelsfs.zst}"
 
-SWAPFILE_PATH="@swap/swapfile"  # Under the @swap subvolume
+SWAPFILE_PATH="${OSI_SWAPFILE_PATH:-@swap/swapfile}"  # Under the @swap subvolume
 SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
+
+# Subvolumes to create (space separated; the installer exports the list).
+BTRFS_SUBVOLUMES="${OSI_BTRFS_SUBVOLUMES:-@root @home @data @nix @cache @log @flatpak @snapd @waydroid @containers @machines @lxc @lxd @libvirt @qemu @swap @shani-chronoa}"
 
 # Pre-check critical files
 [[ ! -f "${PART_LAYOUT}" ]] && die "Partition layout file not found at ${PART_LAYOUT}"
 [[ ! -f "${ROOTFSZST_SOURCE}" ]] && die "System image not found at ${ROOTFSZST_SOURCE}"
 [[ ! -f "${FLATPAKFS_SOURCE}" ]] && log_info "Flatpak image not found at ${FLATPAKFS_SOURCE} — Flatpak install will be skipped."
 [[ ! -f "${SNAPFS_SOURCE}" ]] && log_info "Snap image not found at ${SNAPFS_SOURCE} — Snap install will be skipped."
+[[ ! -f "${AIMODELSFS_SOURCE}" ]] && log_info "AI models image not found at ${AIMODELSFS_SOURCE} — AI models install will be skipped."
 
 # Function: get_partition_prefix
 # If the device is NVMe or MMC/eMMC, append a "p" (e.g., /dev/nvme0n1 becomes /dev/nvme0n1p)
@@ -430,7 +439,7 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
-  local subvolumes=( "@root" "@home" "@data" "@nix" "@cache" "@log" "@flatpak" "@snapd" "@waydroid" "@containers" "@machines" "@lxc" "@lxd" "@libvirt" "@qemu" "@swap" )
+  local subvolumes=( ${BTRFS_SUBVOLUMES} )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
       log_info "Creating subvolume ${subvol}"
@@ -609,6 +618,31 @@ extract_snap_image() {
   sudo btrfs subvolume delete "/mnt/snapd_subvol" || log_warn "Could not delete snap_subvol; please remove manually later"
 }
 
+# Function: extract_aimodels_image
+# Decompress and load the AI models image, then create a snapshot.
+extract_aimodels_image() {
+  log_info "Extracting AI models image into /mnt"
+  extract_image "${AIMODELSFS_SOURCE}" "/mnt"
+  if sudo btrfs subvolume show "/mnt/shani-chronoa_subvol" &>/dev/null; then
+    log_info "Subvolume 'shani-chronoa_subvol' detected"
+  else
+    log_error "Subvolume 'shani-chronoa_subvol' not found after extraction"
+    exit 1
+  fi
+
+  # Delete existing @shani-chronoa if present (idempotent install safety)
+  if sudo btrfs subvolume show "/mnt/@shani-chronoa" &>/dev/null; then
+    log_info "Existing @shani-chronoa detected — deleting before reseeding"
+    sudo btrfs subvolume delete "/mnt/@shani-chronoa" \
+      || die "Failed to delete existing @shani-chronoa"
+  fi
+
+  log_info "Creating snapshot @shani-chronoa from shani-chronoa_subvol"
+  sudo btrfs subvolume snapshot "/mnt/shani-chronoa_subvol" "/mnt/@shani-chronoa" || die "Snapshot creation for @shani-chronoa failed"
+  log_info "Deleting original subvolume shani-chronoa_subvol"
+  sudo btrfs subvolume delete "/mnt/shani-chronoa_subvol" || log_warn "Could not delete shani-chronoa_subvol; please remove manually later"
+}
+
 # Function: create_swapfile
 # Create a swapfile within the @swap subvolume and activate it.
 create_swapfile() {
@@ -655,6 +689,12 @@ do_setup() {
     extract_snap_image
   else
     log_info "Skipping Snap image extraction (snapfs.zst not present on ISO)."
+  fi
+
+  if [[ -f "${AIMODELSFS_SOURCE}" ]]; then
+    extract_aimodels_image
+  else
+    log_info "Skipping AI models image extraction (aimodelsfs.zst not present on ISO)."
   fi
 
   create_swapfile

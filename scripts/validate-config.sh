@@ -4,19 +4,19 @@ set -euo pipefail
 # validate-config.sh — Validate os-installer configuration files.
 #
 # Validates YAML/JSON configuration for the os-installer framework:
-#   - Checks /etc/shani/os-installer/config for required fields
+#   - Checks /etc/os-installer/config.yaml for required fields
 #   - Validates that all referenced scripts exist and are executable
 #   - Checks for syntax errors in configuration files
 #
 # Usage: validate-config.sh [CONFIG_DIR]
-#   CONFIG_DIR  Path to config directory (default: /etc/shani/os-installer/config)
+#   CONFIG_DIR  Path to config directory (default: /etc/os-installer)
 #
 # Exit codes:
 #   0   Configuration is valid
 #   1   Configuration errors found
 #   2   Configuration directory not found
 
-CONFIG_DIR="${1:-/etc/shani/os-installer/config}"
+CONFIG_DIR="${1:-/etc/os-installer}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -193,9 +193,12 @@ if [[ -n "$YAML_CONFIG" ]]; then
 import yaml
 with open('${YAML_CONFIG}', 'r') as f:
     data = yaml.safe_load(f) or {}
+# Mirrors os-installer's default_config (src/core/config.py).
 known = {'distribution_name', 'scripts', 'internet', 'fixed_language',
-         'welcome_page', 'disk', 'disk_encryption', 'user',
-         'skip_region', 'skip_user', 'failure_help_url', 'commands'}
+         'welcome_page', 'disk', 'disk_encryption', 'secure_boot', 'tpm',
+         'desktop', 'user', 'skip_region', 'skip_user', 'install_policy',
+         'additional_software', 'additional_features', 'install_slideshow',
+         'failure_help_url'}
 unknown = [k for k in data if k not in known]
 print('\n'.join(unknown))
 " 2>/dev/null)" || true

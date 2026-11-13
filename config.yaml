@@ -62,6 +62,12 @@ disk_encryption:
   min_length: 1
   confirmation: yes
 
+# Secure Boot and TPM pages are not configured here on purpose: the defaults
+# are "auto", which shows each page only where it can work (UEFI for MOK
+# enrollment, a present TPM for auto-unlock), and install_policy's defaults
+# are already the ShaniOS labels, subvolumes, image paths and boot entries.
+# Set a key only to override one; the installer exports all of them as OSI_*.
+
 # User setup requests a printable name and a password by default.
 #
 # request_username      Request a username. Otherwise generated from name.
