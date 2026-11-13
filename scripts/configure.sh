@@ -1188,21 +1188,62 @@ setup_secureboot() {
 }
 
 
-# Function: setup_tpm
-# The installer's TPM page records the choice. Enrollment itself needs the
-# booted installed system (gen-efi enroll-tpm2 owns the PCR policy), because
-# the LUKS mapper and the final PCRs only exist after the installed boot.
-# The cmdline already carries tpm2-device=auto for every encrypted install,
-# so enrolling the TPM2 slot is all that is left.
-setup_tpm() {
+# Function: enroll_tpm_target
+# Enroll the TPM now, against the target's LUKS mapper (it is open while the
+# install runs). This uses gen-efi's literal PCR policy for a booted system:
+# Secure Boot enabled -> 0+7 (firmware + Secure Boot state), otherwise 0.
+# The PIN slot stays, so a failed auto-unlock never locks the user out.
+#
+# A pcrlock policy is deliberately not used here: it is only usable if the
+# initramfs carries it, and the freshly built one is guaranteed to understand
+# the literal mask. `gen-efi.sh enroll-tpm2` can move to a pcrlock policy
+# after first boot.
+tpm2_literal_pcrs() {
+    local sb_state
+    sb_state=$(mokutil --sb-state 2>/dev/null || true)
+    if [[ "$sb_state" == *"SecureBoot enabled"* ]]; then
+        echo "0+7"
+    else
+        echo "0"
+    fi
+}
+
+enroll_tpm_target() {
     if ! _is_yes "${OSI_USE_TPM:-0}"; then
         log_info "TPM auto-unlock not requested"
         return 0
     fi
 
-    log_info "TPM auto-unlock requested — finish after first boot with: sudo gen-efi.sh enroll-tpm2"
-    run_in_target "mkdir -p /etc/shani && printf 'use_tpm=1\n' > /etc/shani/tpm2-enroll" \
-        || log_warn "Could not record the TPM choice in /etc/shani/tpm2-enroll"
+    if [[ -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
+        log_warn "TPM auto-unlock requested but no encryption PIN was provided — skipping"
+        return 0
+    fi
+    if ! command -v systemd-cryptenroll &>/dev/null; then
+        log_warn "systemd-cryptenroll not found — skipping TPM enrollment"
+        return 0
+    fi
+
+    local mapper="/dev/mapper/${ROOTLABEL}"
+    if [[ ! -b "$mapper" ]]; then
+        log_warn "No LUKS mapper ${mapper} — skipping TPM enrollment"
+        return 0
+    fi
+    if ! systemd-cryptenroll --tpm2-device=list 2>/dev/null | grep -q .; then
+        log_warn "No TPM2 device found — skipping TPM enrollment"
+        return 0
+    fi
+
+    local pcrs
+    pcrs=$(tpm2_literal_pcrs)
+    log_info "Enrolling TPM2 for ${mapper} (PCR ${pcrs})"
+    if PASSWORD="${OSI_ENCRYPTION_PIN}" systemd-cryptenroll \
+            --tpm2-device=auto --tpm2-pcrs="${pcrs}" "${mapper}"; then
+        log_info "TPM2 enrolled — the disk unlocks automatically on this machine"
+        run_in_target "mkdir -p /etc/shani && printf 'use_tpm=1\n' > /etc/shani/tpm2-enroll" \
+            || log_warn "Could not record the TPM choice in /etc/shani/tpm2-enroll"
+    else
+        log_warn "TPM2 enrollment failed — the disk will still unlock with the PIN"
+    fi
     return 0
 }
 
@@ -1269,7 +1310,7 @@ main() {
   generate_uki_entry "${candidate_slot}" "${active_slot}"
   generate_loader_conf "${active_slot}"
 
-  setup_tpm
+  enroll_tpm_target
   setup_secureboot
   log_info "Configuration completed successfully!"
 }

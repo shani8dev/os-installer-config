@@ -100,13 +100,13 @@ the next boot, and it is never stored on the installed system. The literal
 `shanios` remains the fallback for a direct, non-installer run.
 
 **TPM** — the installer's TPM page exports `OSI_USE_TPM=1` when the user
-wants the encrypted disk to unlock with the TPM. `configure.sh` records the
-choice in `/etc/shani/tpm2-enroll` and the cmdline already carries
-`tpm2-device=auto` for every encrypted install, so the remaining step is
-enrolling the TPM2 slot after first boot:
-`sudo gen-efi.sh enroll-tpm2` (PCR 0+7 with Secure Boot, 0 without). It
-cannot be done during install: `gen-efi` needs the booted system's LUKS
-mapper and final PCRs.
+wants the encrypted disk to unlock with the TPM. `configure.sh` enrolls it
+during installation: the target's LUKS mapper is open, and it uses the same
+literal PCR policy `gen-efi` uses on a booted system (0+7 with Secure Boot,
+0 without), with `OSI_ENCRYPTION_PIN` as the passphrase. The PIN slot stays,
+so a failed auto-unlock never locks the user out. A pcrlock policy is left to
+`gen-efi.sh enroll-tpm2` after first boot, because it needs the booted
+initramfs.
 
 Every `run_in_target()` call (the helper that runs a command inside the
 chroot'd target system) passes installer-provided values — usernames,
