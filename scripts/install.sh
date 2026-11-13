@@ -283,6 +283,13 @@ do_partitioning() {
 
   if [[ "${OSI_DEVICE_IS_PARTITION}" -eq 0 ]]; then
     log_info "Partitioning whole device ${OSI_DEVICE_PATH}"
+    # Optional secure erase before partitioning (default: quick).
+    if [[ "${OSI_DISK_ERASE:-quick}" == "secure" ]]; then
+      log_info "Secure erase: blkdiscard ${OSI_DEVICE_PATH}"
+      sudo blkdiscard -f "${OSI_DEVICE_PATH}" \
+        || log_warn "blkdiscard failed — continuing with a normal wipe"
+    fi
+
     sudo sfdisk --wipe always --force "${OSI_DEVICE_PATH}" < "${PART_LAYOUT}" || die "Disk partitioning failed"
     sudo partprobe "${OSI_DEVICE_PATH}" || true
     sudo udevadm settle

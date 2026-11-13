@@ -1251,8 +1251,15 @@ enroll_tpm_target() {
     local pcrs
     pcrs=$(tpm2_literal_pcrs)
     log_info "Enrolling TPM2 for ${mapper} (PCR ${pcrs})"
+    local -a pin_args=()
+    if _is_yes "${OSI_USE_TPM_PIN:-0}" && [[ -n "${OSI_TPM_PIN:-}" ]]; then
+        pin_args=(--tpm2-with-pin=yes)
+        export NEWPIN="${OSI_TPM_PIN}"
+        log_info "TPM2 PIN will be required at boot"
+    fi
+
     if PASSWORD="${OSI_ENCRYPTION_PIN}" systemd-cryptenroll \
-            --tpm2-device=auto --tpm2-pcrs="${pcrs}" "${mapper}"; then
+            --tpm2-device=auto --tpm2-pcrs="${pcrs}" "${pin_args[@]}" "${mapper}"; then
         log_info "TPM2 enrolled — the disk unlocks automatically on this machine"
         run_in_target "mkdir -p /etc/shani && printf 'use_tpm=1\n' > /etc/shani/tpm2-enroll" \
             || log_warn "Could not record the TPM choice in /etc/shani/tpm2-enroll"
@@ -1262,9 +1269,63 @@ enroll_tpm_target() {
     return 0
 }
 
+# Function: install_recovery_key
+# The installer generated a recovery key (OSI_RECOVERY_KEY) and the PIN is the
+# existing passphrase: add it as a LUKS keyslot, then leave the key where the
+# UI can show it once (/run is a tmpfs, so a reboot removes it).
+install_recovery_key() {
+    [[ -n "${OSI_RECOVERY_KEY:-}" ]] || return 0
+    if [[ -z "${OSI_ENCRYPTION_PIN:-}" ]]; then
+        log_warn "No encryption PIN — skipping the recovery key"
+        return 0
+    fi
+    local keyfile="/run/os-installer/recovery-key"
+    mkdir -p /run/os-installer
+    printf '%s' "${OSI_RECOVERY_KEY}" > "${keyfile}"
+    chmod 600 "${keyfile}"
+    if printf '%s\n' "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup luksAddKey \
+            --new-keyfile "${keyfile}" "/dev/mapper/${ROOTLABEL}" 2>/dev/null; then
+        chmod 644 "${keyfile}"
+        log_info "LUKS recovery key added"
+    else
+        rm -f "${keyfile}"
+        log_warn "Could not add the LUKS recovery key"
+    fi
+    return 0
+}
+
+# Function: setup_time_sync
+setup_time_sync() {
+    if ! _is_yes "${OSI_TIME_SYNC:-1}"; then
+        log_info "Time sync not requested"
+        return 0
+    fi
+    run_in_target "systemctl enable systemd-timesyncd" \
+        || log_warn "Could not enable systemd-timesyncd"
+    return 0
+}
+
+# Function: copy_network
+# The live session is where the user connected to Wi-Fi; carry the profile to
+# the installed system so the first boot is online.
+copy_network() {
+    if ! _is_yes "${OSI_COPY_NETWORK:-1}"; then
+        return 0
+    fi
+    local src="/etc/NetworkManager/system-connections"
+    local dst="${TARGET}/etc/NetworkManager/system-connections"
+    [[ -d "${src}" ]] || return 0
+    run_in_target "mkdir -p /etc/NetworkManager/system-connections" || return 0
+    cp -f "${src}"/*.nmconnection "${dst}/" 2>/dev/null || true
+    chmod 600 "${dst}"/*.nmconnection 2>/dev/null || true
+    log_info "Copied the live session's network connections"
+    return 0
+}
+
 # Main configuration function
 main() {
   mount_target
+  install_recovery_key
   mount_additional_subvols
   mount_overlay
 
@@ -1325,6 +1386,8 @@ main() {
   generate_uki_entry "${candidate_slot}" "${active_slot}"
   generate_loader_conf "${active_slot}"
 
+  setup_time_sync
+  copy_network
   enroll_tpm_target
   setup_secureboot
   log_info "Configuration completed successfully!"
