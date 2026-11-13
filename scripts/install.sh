@@ -227,6 +227,7 @@ FLATPAKFS_SOURCE="${IMAGE_DIR}/${OSI_FLATPAK_IMAGE:-flatpakfs.zst}"
 SNAPFS_SOURCE="${IMAGE_DIR}/${OSI_SNAP_IMAGE:-snapfs.zst}"
 AIMODELSFS_SOURCE="${IMAGE_DIR}/${OSI_AI_MODELS_IMAGE:-aimodelsfs.zst}"
 
+KEEP_DATA="${OSI_KEEP_DATA:-0}"
 SWAPFILE_PATH="${OSI_SWAPFILE_PATH:-@swap/swapfile}"  # Under the @swap subvolume
 SWAPFILE_SIZE=$(free -m | awk '/^Mem:/{print $2}')
 
@@ -685,12 +686,55 @@ create_swapfile() {
 }
 
 # Main setup function: run all steps sequentially.
-do_setup() {
-  do_partitioning
-  create_filesystems
+# Reinstall keeping /data: the disk is not re-partitioned and the btrfs is
+# not mkfs'd. The system subvolumes are replaced; @home and @data (the user's
+# data) are left alone. The ESP is reformatted and the bootloader reinstalled.
+keep_data_setup() {
+  log_info "Reinstall keeping /data: reusing the existing filesystem"
+
+  # Open the existing LUKS, as create_filesystems does for a fresh install.
+  if [[ "${OSI_USE_ENCRYPTION}" -eq 1 ]]; then
+    local luks_key_file
+    luks_key_file=$(mktemp) || die "Failed to create temporary LUKS key file"
+    chmod 600 "${luks_key_file}"
+    case $- in *x*) _oic_had_xtrace=1 ;; *) _oic_had_xtrace=0 ;; esac
+    set +x
+    printf '%s' "${OSI_ENCRYPTION_PIN}" > "${luks_key_file}"
+    [[ "${_oic_had_xtrace}" -eq 1 ]] && set -x
+    if ! sudo cryptsetup open --key-file="${luks_key_file}" "${ROOT_PARTITION}" "${ROOTLABEL}"; then
+      shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
+      die "LUKS open failed on ${ROOT_PARTITION} (keep /data)"
+    fi
+    shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
+  fi
+
+  mount_boot_partition "${EFI_PARTITION}"
   mount_top_level
+
+  # Drop the system subvolumes; @home and @data are the user's.
+  local sub
+  for sub in @root @nix @cache @log @flatpak @snapd @waydroid @containers \
+             @machines @lxc @lxd @libvirt @qemu @swap; do
+    if [[ -d "/mnt/${sub}" ]]; then
+      sudo btrfs subvolume delete "/mnt/${sub}" \
+        || die "Could not delete /mnt/${sub} (keep /data)"
+    fi
+  done
+
   create_subvolumes
   extract_system_image
+}
+
+do_setup() {
+  if [[ "${KEEP_DATA}" == "1" ]]; then
+    keep_data_setup
+  else
+    do_partitioning
+    create_filesystems
+    mount_top_level
+    create_subvolumes
+    extract_system_image
+  fi
 
   if [[ -f "${FLATPAKFS_SOURCE}" ]]; then
     extract_flatpak_image
