@@ -87,6 +87,7 @@ that this repo's scripts consume:
   `skip_user`/`skip_region` come from the installer as `OSI_SKIP_*`; the
   kernel cmdline files and UKI entry directory come from
   `OSI_KERNEL_CMDLINE_*` / `OSI_UKI_BOOT_ENTRIES`.
+- **`repair.sh`** — `--repair`: no partitioning or extraction. Finds the active slot from `@data/current-slot`, runs `configure.sh` on the existing system, then `gen-efi configure <slot>` and `enroll-mok`. Keeps the machine-id and an existing user.
 - **`validate-config.sh`** — checks the YAML, the referenced scripts and the
   top-level keys against the installer's own config schema.
 

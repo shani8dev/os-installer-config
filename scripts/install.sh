@@ -209,6 +209,12 @@ check_env
 # that predates the export (and with a direct, non-installer run).
 OS_NAME="${OSI_OS_NAME:-shanios}"
 OSIDIR="${OSIDIR:-/etc/os-installer}"
+
+# Repair mode: never partition or extract — hand over to repair.sh, which
+# re-runs the configuration and the boot chain on the existing install.
+if [[ "${OSI_REPAIR:-0}" == "1" ]]; then
+    exec /bin/bash "${OSIDIR}/scripts/repair.sh"
+fi
 PART_LAYOUT="${OSI_PARTITION_LAYOUT:-${OSIDIR}/bits/part.sfdisk}"
 ROOTLABEL="${OSI_ROOT_LABEL:-shani_root}"
 BOOTLABEL="${OSI_BOOT_LABEL:-shani_boot}"

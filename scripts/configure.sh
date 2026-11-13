@@ -341,6 +341,12 @@ run_in_target() {
 
 # Function: setup_machine_id_target
 setup_machine_id_target() {
+  # A repair keeps the installed machine-id: changing it would orphan the
+  # journal, the network identity and anything keyed to it.
+  if [[ "${OSI_REPAIR:-0}" == "1" ]]; then
+    log_info "Repair: keeping the existing machine-id"
+    return 0
+  fi
   # No variable is required for machine-id setup; always execute.
   log_info "Generating new machine-id"
   # The base image ships a non-empty /etc/machine-id created during the
@@ -554,6 +560,11 @@ setup_user_target() {
   # by the installer from the display name) — useradd needs the latter, a
   # raw display name (spaces, uppercase, unicode) would make useradd fail.
   if [ -n "${OSI_USER_NAME:-}" ] && [ -n "${OSI_USER_USERNAME:-}" ]; then
+    # A repair must not try to create the account again.
+    if [[ "${OSI_REPAIR:-0}" == "1" ]] && run_in_target 'id "$1" >/dev/null 2>&1' "${OSI_USER_USERNAME}"; then
+      log_info "Repair: user ${OSI_USER_USERNAME} already exists, skipping creation"
+      return 0
+    fi
     log_info "Creating primary user: ${OSI_USER_NAME} (${OSI_USER_USERNAME})"
 
     # Read the canonical group list from the image — single source of truth
