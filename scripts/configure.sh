@@ -360,9 +360,10 @@ setup_machine_id_target() {
 
 # Function: setup_hostname_target
 setup_hostname_target() {
-  if [ -n "${OS_NAME:-}" ]; then
-    log_info "Setting hostname to ${OS_NAME}"
-    run_in_target "echo \"${OS_NAME}\" > /etc/hostname && hostnamectl set-hostname '${OS_NAME}'"
+  local hostname="${OSI_HOSTNAME:-${OS_NAME:-}}"
+  if [ -n "${hostname}" ]; then
+    log_info "Setting hostname to ${hostname}"
+    run_in_target "echo \"${hostname}\" > /etc/hostname && hostnamectl set-hostname '${hostname}'"
   else
     log_info "Hostname variable not provided, skipping hostname configuration."
   fi
@@ -490,7 +491,14 @@ setup_keyboard_target() {
     # arguments rather than interpolating into the command string.
     run_in_target 'echo "KEYMAP=$1" > /etc/vconsole.conf && localectl set-keymap "$1"' \
       "$vconsole_map" \
-      || log_warn "Failed to set console keymap to '${vconsole_map}'"
+      || log_error "Failed to set console keymap to '${vconsole_map}' — the disk passphrase at boot will use the default layout"
+
+    # The Plymouth LUKS prompt uses this keymap (rd.vconsole.keymap + dracut's
+    # vconsole module), so a keymap the target does not ship is a real problem:
+    # the passphrase typed at install time would not match at boot.
+    if ! run_in_target 'localectl list-keymaps 2>/dev/null | grep -qx "$1"' "$vconsole_map"; then
+      log_warn "Console keymap '${vconsole_map}' is not present in the target — the boot passphrase prompt may fall back to 'us'"
+    fi
 
     # Apply X11 keymap (full localectl call with all four fields)
     run_in_target 'localectl set-x11-keymap "$1" "$2" "$3" "$4"' \
@@ -560,6 +568,13 @@ setup_user_target() {
     # shani-extra-groups because shani-user-setup must not grant sudo to users
     # added post-install. Add it here only, for the primary installer-created user.
     local groups_str="wheel${extra_groups:+,${extra_groups}}"
+
+    # Groups the installer's config asked for (default: wheel, already there).
+    # The image's canonical list stays authoritative; these are added on top.
+    local extra_group
+    for extra_group in ${OSI_USER_GROUPS:-}; do
+      [[ ",${groups_str}," == *",${extra_group},"* ]] || groups_str="${groups_str},${extra_group}"
+    done
 
     # Ensure every group exists before useradd — some may be absent on minimal profiles.
     # groups_str is built from /etc/shani-extra-groups (a fixed system file), not
