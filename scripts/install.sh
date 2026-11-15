@@ -453,6 +453,12 @@ mount_top_level() {
 # Create the necessary Btrfs subvolumes and additional directories.
 create_subvolumes() {
   log_info "Creating required Btrfs subvolumes and directories"
+  # BTRFS_SUBVOLUMES is a space-separated list, but the script's global IFS is
+  # newline/tab (so filenames with spaces survive elsewhere). Inheriting that
+  # IFS here makes the array one element — literally "@/root @home @data ..." —
+  # so @swap is never created and swapfile creation fails. Split on whitespace
+  # explicitly; the local IFS is restored when the function returns.
+  local IFS=$' \t\n'
   local subvolumes=( ${BTRFS_SUBVOLUMES} )
   for subvol in "${subvolumes[@]}"; do
     if ! sudo btrfs subvolume list /mnt | grep -q "path ${subvol}\$"; then
