@@ -16,11 +16,22 @@ scripts:
 # Default: connection_required: yes, checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
 internet:
   connection_required: no
+  # offline (no cable), the page lists the Wi-Fi networks to join - the
+  # install itself needs no internet, so it can also be skipped; online,
+  # it is passed by itself. A connection made here is copied into the
+  # installed system (copy_network), so it starts online.
+  offer_when_offline: yes
   checker_url: 'http://nmcheck.gnome.org/check_network_status.txt'
 
 # Skip the language selection dialog by specifing a language, e.g. 'pt_BR'
 # Default: no (No fixed language, not Norwegian)
-fixed_language: en_US
+# no: the first page lists every language the installer is translated into
+# (the ISO ships glibc-locales, so each one can be shown); the choice carries
+# into the installed system
+fixed_language: no
+# first on the language page, in this order - the languages Shani OS's own
+# first setup offers; every other translation follows alphabetically
+featured_languages: [en, hi, mr, de, es, fr]
 
 welcome_page:
     logo: '/usr/share/pixmaps/shanios-logo.png'
@@ -30,6 +41,8 @@ welcome_page:
       An Immutable OS for Ultimate Reliability
 
       This installer will guide you through a quick and secure setup.
+
+      Super + Alt + S turns the screen reader on or off.
 
       Let's begin!
     usage: yes
@@ -86,6 +99,11 @@ user:
 # These settings allow to disable these pages.
 #
 # Default: skip_region: no, skip_user: no
+# The machine's name, not asked: `*` leaves it to shani-first-boot, which
+# names a machine with no /etc/hostname shanios-xxxx (unique, so two Shani
+# machines on one network never share one) - after a factory reset too. A
+# fixed name here is written by configure.sh; null asks on the hostname page.
+hostname: 'shanios-*'
 skip_region: yes
 skip_user: yes
 
@@ -94,7 +112,10 @@ skip_user: yes
 # replaced with the os-installer version.
 #
 # Default: 'https://duckduckgo.com/?q="os-installer {}"+"failed installation"'
-failure_help_url: 'https://support.dist.ro/new_issue?q="failed"+"os-installer {}"'
+# Shani OS's own tracker (this was another distribution's support page, left
+# over from the example config). The button greys out when `browser` is not
+# installed - the live ISO has none.
+failure_help_url: 'https://github.com/shani8dev/os-installer-config/issues?q="os-installer+{}"'
 
 # Certain parts of the installer launch external programs. These can be configured here.
 # Note: For calling the command, the string is split up by spaces.
@@ -106,4 +127,5 @@ commands:
   browser: 'firefox'
   disks  : 'gnome-disks'
   reboot : 'shutdown -r now'
-  wifi   : 'gnome-control-center wifi'
+  # shown only when NetworkManager lists no Wi-Fi networks itself
+  wifi   : 'foot nmtui'

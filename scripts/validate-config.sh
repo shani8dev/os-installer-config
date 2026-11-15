@@ -16,7 +16,7 @@ set -euo pipefail
 #   1   Configuration errors found
 #   2   Configuration directory not found
 
-CONFIG_DIR="${1:-/etc/os-installer}"
+CONFIG_DIR="${1:-${CONFIG_DIR:-/etc/os-installer}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -195,10 +195,11 @@ with open('${YAML_CONFIG}', 'r') as f:
     data = yaml.safe_load(f) or {}
 # Mirrors os-installer's default_config (src/core/config.py).
 known = {'distribution_name', 'scripts', 'internet', 'fixed_language',
-         'welcome_page', 'disk', 'disk_encryption', 'secure_boot', 'tpm',
-         'desktop', 'user', 'skip_region', 'skip_user', 'install_policy',
-         'additional_software', 'additional_features', 'install_slideshow',
-         'failure_help_url'}
+         'welcome_page', 'disk', 'disk_encryption', 'disk_erase', 'time_sync',
+         'copy_network', 'secure_boot', 'tpm', 'desktop', 'user',
+         'skip_region', 'skip_user', 'hostname', 'power_warning',
+         'install_policy', 'additional_software', 'additional_features',
+         'install_slideshow', 'failure_help_url', 'commands', 'featured_languages'}
 unknown = [k for k in data if k not in known]
 print('\n'.join(unknown))
 " 2>/dev/null)" || true

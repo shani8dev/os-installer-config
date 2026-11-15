@@ -212,8 +212,23 @@ OSIDIR="${OSIDIR:-/etc/os-installer}"
 
 # Repair mode: never partition or extract — hand over to repair.sh, which
 # re-runs the configuration and the boot chain on the existing install.
+#
+# repair.sh runs as root (it mounts, chroots and rebuilds the boot chain) and
+# this script runs as the live user: it used to be exec'd as that user and
+# stopped at its "must run as root" line, so Repair never worked from the
+# installer. And an encrypted disk has to be unlocked first - its shani_root
+# label is only visible inside the LUKS container - with the passphrase the
+# disk already has (the installer's encryption page asks for it on repair).
 if [[ "${OSI_REPAIR:-0}" == "1" ]]; then
-    exec /bin/bash "${OSIDIR}/scripts/repair.sh"
+    if [[ "${OSI_USE_ENCRYPTION:-0}" == "1" ]]; then
+        luks_part=$(lsblk -lnpo NAME,FSTYPE "${OSI_DEVICE_PATH}" 2>/dev/null | awk '$2 == "crypto_LUKS" { print $1; exit }')
+        [[ -n "${luks_part}" ]] || die "No encrypted partition found on ${OSI_DEVICE_PATH} to repair"
+        if ! printf '%s' "${OSI_ENCRYPTION_PIN}" \
+            | sudo cryptsetup open --key-file=- "${luks_part}" "${OSI_ROOT_LABEL:-shani_root}"; then
+            die "The disk passphrase is not right - it is the one typed at every boot of this machine."
+        fi
+    fi
+    exec sudo --preserve-env /bin/bash "${OSIDIR}/scripts/repair.sh"
 fi
 PART_LAYOUT="${OSI_PARTITION_LAYOUT:-${OSIDIR}/bits/part.sfdisk}"
 ROOTLABEL="${OSI_ROOT_LABEL:-shani_root}"
@@ -244,7 +259,11 @@ BTRFS_SUBVOLUMES="${OSI_BTRFS_SUBVOLUMES:-@root @home @data @nix @cache @log @fl
 # Function: get_partition_prefix
 # If the device is NVMe or MMC/eMMC, append a "p" (e.g., /dev/nvme0n1 becomes /dev/nvme0n1p)
 get_partition_prefix() {
-  if [[ "${OSI_DEVICE_PATH}" =~ ^/dev/nvme[0-9]+n[0-9]+$ ]] || [[ "${OSI_DEVICE_PATH}" =~ ^/dev/mmcblk[0-9]+$ ]]; then
+  # The kernel's rule, not a list of names: a disk whose name ends in a digit
+  # numbers its partitions after a "p" (nvme0n1p2, mmcblk0p2, loop0p2, nbd0p2,
+  # pmem0p2); any other gets the number straight on (sda2, vda2, xvda2). Only
+  # nvme and mmcblk were known before.
+  if [[ "${OSI_DEVICE_PATH}" =~ [0-9]$ ]]; then
     echo "${OSI_DEVICE_PATH}p"
   else
     echo "${OSI_DEVICE_PATH}"
@@ -271,12 +290,113 @@ normalize_partition() {
 
 # Function: extract_image
 # Decompress an image with zstd and pipe it into btrfs receive.
+# ── Progress for the installer's bar (OSI_PROGRESS_FILE) ─────────────────────
+# Extracting the images is nearly all of an install's time, so the percentage is
+# the bytes of them read so far, out of all of them present (pv), up to 95; the
+# swapfile and boot entry take it to 100. No file given, or no pv: no number,
+# and the installer's bar pulses as before.
+PROGRESS_TOTAL=0
+PROGRESS_DONE=0
+_progress() {
+  [[ -n "${OSI_PROGRESS_FILE:-}" ]] || return 0
+  printf '%d\n' "$1" > "${OSI_PROGRESS_FILE}.tmp" 2>/dev/null \
+    && mv -f "${OSI_PROGRESS_FILE}.tmp" "${OSI_PROGRESS_FILE}" 2>/dev/null
+  return 0
+}
+_progress_total() {
+  local f
+  PROGRESS_TOTAL=0
+  ISO_ROOTFS_SIZE=$(stat -c %s "$1" 2>/dev/null || echo 0)
+  for f in "$@"; do
+    [[ -f "$f" ]] && PROGRESS_TOTAL=$(( PROGRESS_TOTAL + $(stat -c %s "$f") ))
+  done
+  _progress 0
+}
+
+# ── The newest image from the web, when online ───────────────────────────────
+# The ISO carries the image it was built around; online, the channel a new
+# install follows (stable) may have a newer one. Installing that saves the
+# update the first boot would do at once, and it lands in /data/downloads,
+# where shani-deploy keeps images. Verified like every update - SHA-256 and a
+# signature by a key shani-keyring trusts - and anything short of that (no
+# network, an older or equal image, a bad download or signature) installs the
+# ISO's own image instead. OSI_UPDATE_FROM_WEB=0 turns it off.
+fetch_newer_image() {
+  [[ "${OSI_UPDATE_FROM_WEB:-1}" == "1" ]] || return 0
+  local base="${OSI_IMAGE_URL_BASE:-https://downloads.shani.dev}"
+  local channel="${OSI_UPDATE_CHANNEL:-stable}"
+  local keyring="${OSI_IMAGE_KEYRING:-/usr/share/pacman/keyrings/shani.gpg}"
+  local trusted="${OSI_IMAGE_TRUSTED:-/usr/share/pacman/keyrings/shani-trusted}"
+  local iso_img remote iso_date profile r_date dir gpghome fpr
+  [[ -r "${IMAGE_DIR}/image.txt" ]] && iso_img=$(tr -d '[:space:]' < "${IMAGE_DIR}/image.txt")
+  if [[ ! "${iso_img}" =~ ^shanios-([0-9]{8})-([a-z0-9_-]+)\.zst$ ]]; then
+    log_info "Web update: the ISO does not say which image it carries - installing its own"
+    return 0
+  fi
+  iso_date="${BASH_REMATCH[1]}"; profile="${BASH_REMATCH[2]}"
+  remote=$(curl -fsSL --connect-timeout 5 --max-time 15 "${base}/${profile}/${channel}.txt" 2>/dev/null | tr -d '[:space:]') || true
+  if [[ ! "${remote}" =~ ^shanios-([0-9]{8})-${profile}\.zst$ ]]; then
+    log_info "Web update: no ${channel} image reachable (offline?) - installing the ISO's ${iso_date}"
+    return 0
+  fi
+  r_date="${BASH_REMATCH[1]}"
+  if (( 10#${r_date} <= 10#${iso_date} )); then
+    log_info "Web update: the ISO's ${iso_date} is current for ${channel} (${r_date})"
+    return 0
+  fi
+  log_info "Web update: ${channel} has ${r_date}, newer than the ISO's ${iso_date} - downloading it"
+  dir="/mnt/@data/downloads"
+  sudo mkdir -p "${dir}"
+  local url="${base}/${profile}/${r_date}/${remote}" ok=0
+  if sudo curl -fL --progress-bar --retry 3 --connect-timeout 10 -C - -o "${dir}/${remote}" "${url}" \
+     && sudo curl -fsSL --retry 3 -o "${dir}/${remote}.sha256" "${url}.sha256" \
+     && sudo curl -fsSL --retry 3 -o "${dir}/${remote}.asc" "${url}.asc" \
+     && (cd "${dir}" && sudo sha256sum -c --status "${remote}.sha256"); then
+    gpghome=$(mktemp -d)
+    if gpg --homedir "${gpghome}" --batch --quiet --import "${keyring}" 2>/dev/null; then
+      fpr=$(gpg --homedir "${gpghome}" --batch --status-fd 1 --verify "${dir}/${remote}.asc" "${dir}/${remote}" 2>/dev/null \
+              | awk '$2 == "VALIDSIG" { print $3; exit }')
+      [[ -n "${fpr}" ]] && grep -q "^${fpr}:" "${trusted}" 2>/dev/null && ok=1
+    fi
+    rm -rf "${gpghome}"
+  fi
+  if (( ok )); then
+    log_info "Web update: ${remote} verified (SHA-256, signed by ${fpr}) - installing it"
+    ROOTFSZST_SOURCE="${dir}/${remote}"
+    PROGRESS_TOTAL=$(( PROGRESS_TOTAL - ISO_ROOTFS_SIZE + $(stat -c %s "${ROOTFSZST_SOURCE}") ))
+  else
+    log_warn "Web update: ${remote} did not download or verify - installing the ISO's ${iso_date}"
+    sudo rm -f "${dir}/${remote}" "${dir}/${remote}.sha256" "${dir}/${remote}.asc"
+  fi
+  return 0
+}
+
 extract_image() {
   local src="$1"
   local dest="$2"
+  local size
+  size=$(stat -c %s "${src}" 2>/dev/null || echo 0)
   log_info "Extracting image from ${src} into ${dest}"
-  sudo zstd -d --long=31 -T0 "${src}" -c | sudo btrfs receive "${dest}" \
-    || die "Image extraction from ${src} failed"
+  if [[ -n "${OSI_PROGRESS_FILE:-}" ]] && command -v pv >/dev/null && (( PROGRESS_TOTAL > 0 )); then
+    # pv -n prints a percentage of this file per second on stderr
+    if pv -n -i 1 "${src}" 2> >(while read -r p; do
+          _progress $(( (PROGRESS_DONE + size * p / 100) * 95 / PROGRESS_TOTAL ))
+        done) \
+       | sudo zstd -d --long=31 -T0 -c | sudo btrfs receive "${dest}"; then
+      PROGRESS_DONE=$(( PROGRESS_DONE + size ))
+      return 0
+    fi
+  elif sudo zstd -d --long=31 -T0 "${src}" -c | sudo btrfs receive "${dest}"; then
+    PROGRESS_DONE=$(( PROGRESS_DONE + size ))
+    return 0
+  fi
+  # Failed. zstd checks every frame's checksum, so a damaged USB stick or a
+  # bad download shows here - say that, not just "failed": the fix is to
+  # write the stick again, not to retry the install.
+  if ! zstd -t --long=31 -q "${src}" 2>/dev/null; then
+    die "The installation media is damaged: ${src##*/} does not read back correctly. Download the ISO again (check its SHA-256) and write the USB stick again."
+  fi
+  die "Image extraction from ${src} failed (the image itself reads back fine - see the log above)"
 }
 
 log_info "Starting disk setup..."
@@ -709,7 +829,7 @@ keep_data_setup() {
     [[ "${_oic_had_xtrace}" -eq 1 ]] && set -x
     if ! sudo cryptsetup open --key-file="${luks_key_file}" "${ROOT_PARTITION}" "${ROOTLABEL}"; then
       shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
-      die "LUKS open failed on ${ROOT_PARTITION} (keep /data)"
+      die "The disk passphrase is not right - it is the one typed at every boot of this machine (keep /data)."
     fi
     shred -u "${luks_key_file}" 2>/dev/null || rm -f "${luks_key_file}"
   fi
@@ -728,10 +848,12 @@ keep_data_setup() {
   done
 
   create_subvolumes
+  fetch_newer_image
   extract_system_image
 }
 
 do_setup() {
+  _progress_total "${ROOTFSZST_SOURCE}" "${FLATPAKFS_SOURCE}" "${SNAPFS_SOURCE}" "${AIMODELSFS_SOURCE}"
   if [[ "${KEEP_DATA}" == "1" ]]; then
     keep_data_setup
   else
@@ -739,6 +861,7 @@ do_setup() {
     create_filesystems
     mount_top_level
     create_subvolumes
+    fetch_newer_image
     extract_system_image
   fi
 
@@ -782,6 +905,7 @@ do_setup() {
   log_info "Syncing data to disk..."
   sync
 
+  _progress 100
   log_info "Installation complete: Disk setup and blue-green configuration finished."
   log_info "IMPORTANT: Update /mnt/etc/fstab and configure your bootloader."
 }

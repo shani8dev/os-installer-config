@@ -367,9 +367,17 @@ setup_machine_id_target() {
 # Function: setup_hostname_target
 setup_hostname_target() {
   local hostname="${OSI_HOSTNAME:-${OS_NAME:-}}"
+  # A trailing * (config.yaml's default, `shanios-*`) means "let the machine
+  # name itself": shani-first-boot gives a machine with no /etc/hostname a
+  # unique shanios-xxxx - on this install and again after a factory reset,
+  # which wipes /etc's overlay. A name the person typed is written here.
+  if [[ "${hostname}" == *'*' ]]; then
+    log_info "Hostname left to the first boot (${hostname})"
+    return 0
+  fi
   if [ -n "${hostname}" ]; then
     log_info "Setting hostname to ${hostname}"
-    run_in_target "echo \"${hostname}\" > /etc/hostname && hostnamectl set-hostname '${hostname}'"
+    run_in_target 'echo "$1" > /etc/hostname && hostnamectl set-hostname "$1"' "${hostname}"
   else
     log_info "Hostname variable not provided, skipping hostname configuration."
   fi
@@ -647,16 +655,24 @@ setup_autologin_target() {
       run_in_target 'mkdir -p /etc/sddm.conf.d && printf "[Autologin]\nUser=%s\nSession=plasma\n" "$1" > /etc/sddm.conf.d/autologin.conf' "$OSI_USER_USERNAME"
     elif run_in_target "command -v greetd >/dev/null"; then
       log_info "Configuring greetd autologin for ${OSI_USER_USERNAME}"
-      # OSI_USER_USERNAME is passed as data to awk's -v (never spliced into
-      # the awk/sed PROGRAM text) so a username containing sed/awk-special
-      # characters (e.g. '/', '&', '\') can't corrupt the substitution
-      # expression or be (mis)interpreted as replacement-text metacharacters.
+      # greetd's autologin is an [initial_session]: run once at boot, as that
+      # user, before the greeter. (This used to rewrite `user =` in config.toml
+      # - the [default_session] line, i.e. the user the GREETER runs as - and
+      # the niri desktop's greetd does not even read config.toml: its drop-in
+      # starts greetd with /etc/greetd/shani-niri.toml.) Only a desktop whose
+      # session command is known gets one; otherwise the greeter is kept.
+      # OSI_USER_USERNAME is passed as data ($1), never spliced into the
+      # program text.
       run_in_target 'f=/etc/greetd/config.toml
-        if [ -f "$f" ]; then
-          awk -v u="$1" '"'"'{ if ($0 ~ /^user *= *.*/) print "user = \"" u "\""; else print }'"'"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-        else
-          printf "[autologin]\nuser = \"%s\"\n" "$1" > "$f"
-        fi' "$OSI_USER_USERNAME"
+        [ -f /etc/greetd/shani-niri.toml ] && f=/etc/greetd/shani-niri.toml
+        if command -v niri-session >/dev/null; then cmd=niri-session; else
+          echo "greetd: no known session command - autologin not set, the greeter stays" >&2; exit 0; fi
+        [ -f "$f" ] || printf "[terminal]\nvt = 1\n" > "$f"
+        awk -v u="$1" -v c="$cmd" '"'"'
+          /^\[/ { skip = ($0 == "[initial_session]") }
+          !skip { print }
+          END { print ""; print "[initial_session]"; print "command = \"" c "\""; print "user = \"" u "\"" }
+        '"'"' "$f" > "$f.tmp" && mv "$f.tmp" "$f"' "$OSI_USER_USERNAME"
     elif run_in_target "command -v lightdm >/dev/null"; then
       log_info "Configuring LightDM autologin for ${OSI_USER_USERNAME}"
       # See greetd branch above for why this is awk -v, not sed with the
@@ -695,30 +711,6 @@ set_root_password() {
 setup_plymouth_theme_target() {
   log_info "Configuring Plymouth theme to bgrt"
   run_in_target "mkdir -p /etc/plymouth && { echo '[Daemon]'; echo 'Theme=bgrt'; } > /etc/plymouth/plymouthd.conf"
-}
-
-# Function: setup_firewall_kdeconnect
-setup_firewall_kdeconnect() {
-  log_info "Configuring offline firewall for KDE Connect (compatible with GSConnect)"
-  run_in_target "firewall-offline-cmd --zone=public --add-service=kdeconnect"
-  log_info "Offline firewall rules added. They will apply when firewalld is started."
-}
-
-# Function: setup_firewall_waydroid
-setup_firewall_waydroid() {
-  log_info "Configuring offline firewall rules for Waydroid networking"
-
-  # DNS ports required by Waydroid's internal network
-  run_in_target "firewall-offline-cmd --zone=trusted --add-port=53/udp"
-  run_in_target "firewall-offline-cmd --zone=trusted --add-port=67/udp"
-
-  # Allow packet forwarding in the trusted zone
-  run_in_target "firewall-offline-cmd --zone=trusted --add-forward"
-
-  # Add Waydroid virtual interface to the trusted zone
-  run_in_target "firewall-offline-cmd --zone=trusted --add-interface=waydroid0"
-
-  log_info 'Offline Waydroid firewall rules added (DNS, forwarding, interface "waydroid0").'
 }
 
 # Function: generate_mok_keys_target
@@ -1323,13 +1315,25 @@ copy_network() {
     if ! _is_yes "${OSI_COPY_NETWORK:-1}"; then
         return 0
     fi
+    # The live session's connections (a Wi-Fi joined on the installer's
+    # internet page), so the installed system starts online. Both directories
+    # are root's (system-connections is 0700) and this script runs as the live
+    # user: unprivileged, the copy always failed - silently, under `|| true` -
+    # while the log said "Copied".
     local src="/etc/NetworkManager/system-connections"
     local dst="${TARGET}/etc/NetworkManager/system-connections"
-    [[ -d "${src}" ]] || return 0
-    run_in_target "mkdir -p /etc/NetworkManager/system-connections" || return 0
-    cp -f "${src}"/*.nmconnection "${dst}/" 2>/dev/null || true
-    chmod 600 "${dst}"/*.nmconnection 2>/dev/null || true
-    log_info "Copied the live session's network connections"
+    sudo test -d "${src}" || return 0
+    local n
+    n=$(sudo sh -c 'mkdir -p "$2" && chmod 700 "$2" && n=0
+        for f in "$1"/*.nmconnection; do
+          [ -f "$f" ] || continue
+          install -m 600 -o root -g root "$f" "$2/" && n=$((n + 1))
+        done; echo "$n"' _ "${src}" "${dst}") || n=0
+    if [[ "${n:-0}" -gt 0 ]]; then
+        log_info "Copied ${n} network connection(s) from the live session"
+    else
+        log_info "No network connections in the live session to copy"
+    fi
     return 0
 }
 
@@ -1342,11 +1346,16 @@ main() {
 
   setup_hostname_target
   setup_machine_id_target
+  # The keyboard is the installer's own concern: the disk passphrase at boot is
+  # typed with it.
   setup_keyboard_target
 
-  # If SKIP_REGION is set, skip locale, formats, and timezone configuration.
+  # skip_region: language, formats and timezone belong to the first-boot setup.
+  # It is the one place they are set - a factory reset wipes /data, and the
+  # /etc overlay with it, so anything written here would be gone after one,
+  # while the first-boot setup runs again.
   if _is_yes "${SKIP_REGION:-}"; then
-    log_info "Skipping locale, keyboard, and timezone configuration as per config."
+    log_info "Skipping locale, formats and timezone as per config (the first-boot setup sets them)."
   else
     setup_locale_target
     setup_formats_target
@@ -1363,8 +1372,9 @@ main() {
 
   set_root_password
   setup_plymouth_theme_target
-  setup_firewall_kdeconnect
-  setup_firewall_waydroid
+  # The KDE Connect and Waydroid firewall openings are the image's
+  # (shani-network's install script): set here they lived in /etc's overlay,
+  # which a factory reset wipes.
   generate_mok_keys_target
   install_secureboot_components_target
   detect_luks_uuid

@@ -18,8 +18,22 @@ if not args.config_path:
     exit(1)
 
 
+def po_string(text):
+    """A PO string literal: escaped, and a multi-line text as one quoted line
+    per line ("...\\n"). Written raw, a welcome text's line breaks made a
+    .pot that msgfmt rejects, so no config translation ever compiled."""
+    escaped = text.replace('\\', '\\\\').replace('"', '\\"')
+    lines = escaped.split('\n')
+    if len(lines) == 1:
+        return f'"{lines[0]}"'
+    parts = [f'"{line}\\n"' for line in lines[:-1]]
+    if lines[-1]:
+        parts.append(f'"{lines[-1]}"')
+    return '""\n' + '\n'.join(parts)
+
+
 def add_to_pot(text, pot_file):
-    pot_file.write(f'msgid "{text}"\nmsgstr ""\n\n')
+    pot_file.write(f'msgid {po_string(text)}\nmsgstr ""\n\n')
 
 
 def handle_choices(choices, pot_file):

@@ -192,6 +192,46 @@ rather than writing in a generic format.
 
 ## Audit-verified known issues (confirmed present)
 
+- **2026-11-15, all FIXED and run for real:**
+  - `copy_network` never copied anything: this script runs as the live user,
+    `system-connections` is root's (0700) and the target `/etc` too, and the
+    unprivileged `cp` failed under `|| true` while the log said "Copied".
+    Now `sudo install -m 600 -o root`, with an honest count. Proven in an
+    Arch container as a sudo user: old copied nothing, new copies the
+    connection root:600.
+  - greetd autologin rewrote `user =` in `config.toml` - the
+    `[default_session]` line, i.e. the user the GREETER runs as - and the niri
+    greetd does not read `config.toml` (its drop-in uses `shani-niri.toml`).
+    It now appends an `[initial_session]` (niri-session, the user) to the file
+    greetd actually reads, idempotently; without a known session command it
+    leaves the greeter alone.
+  - `config.yaml`: `failure_help_url` was another distribution's tracker;
+    `fixed_language` is off (the ISO ships glibc-locales; the installer is
+    translated into हिन्दी and मराठी); `internet.offer_when_offline: yes` (the
+    page lists NetworkManager's Wi-Fi networks, or "Continue Without
+    Internet"); `commands.wifi` is `foot nmtui` (shown only with no list).
+  - `po/config_to_pot.py` wrote multi-line msgids raw, so `msgfmt` rejected
+    the .pot and no config translation ever compiled; and nothing built the
+    `.mo` files - the PKGBUILD's `build()` now does.
+  - `install.sh`: a damaged USB stick (zstd checksum) says so - "write the
+    stick again" - instead of "Image extraction failed".
+  - `validate-config.sh` honours `CONFIG_DIR` (its own hint said to set it)
+    and knows every key os-installer reads (`commands`, `disk_erase`, ...).
+- **What belongs where (2026-11-15).** A factory reset (`shani-reset`) wipes
+  /data, and /etc's overlay with it; then only the first-boot setup runs.
+  So this repo installs, and configures only what the install itself needs:
+  disk, LUKS, Secure Boot/MOK, TPM, boot entries, and the keyboard (the disk
+  passphrase is typed with it). Language, formats, timezone, account, network
+  and accessibility are the first-boot setup's (`skip_region`/`skip_user`);
+  every setup writes the console keymap through localed, so the unlock prompt
+  follows it. The machine's name is `shani-first-boot`'s (`hostname:
+  'shanios-*'`). System defaults belong to the image so a reset cannot drop
+  them: the KDE Connect/Waydroid firewall openings moved to shani-network's
+  install script (a reset used to close them), NTP is shani-settings'.
+  gen-efi rebuilds crypttab, the dracut crypt config and the kernel command
+  line from the live system on every run, and the image ships the MOK keys,
+  so encrypted and Secure Boot machines keep updating after a reset.
+
 - **MOK password random per-install (FIXED).** `scripts/configure.sh:939-1013` generates a random password via `openssl rand -base64 18 | tr -dc 'A-Za-z0-9'`, passes it as a positional argument to `mokutil`, and persists it to a root-only file via stdin tee.
 - **`sign_efi_binary()` verified the live file only *after* replacing it —
   FIXED to verify before, matching the sibling implementation.** Found

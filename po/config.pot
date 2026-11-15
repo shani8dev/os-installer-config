@@ -16,13 +16,15 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-msgid "Welcome to Shani OS!
-
-An Immutable OS for Ultimate Reliability
-
-This installer will guide you through a quick and secure setup.
-
-Let's begin!
-"
+msgid ""
+"Welcome to Shani OS!\n"
+"\n"
+"An Immutable OS for Ultimate Reliability\n"
+"\n"
+"This installer will guide you through a quick and secure setup.\n"
+"\n"
+"Super + Alt + S turns the screen reader on or off.\n"
+"\n"
+"Let's begin!\n"
 msgstr ""
 
