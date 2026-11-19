@@ -196,7 +196,7 @@ mount_overlay() {
 
   # Mount the overlay using the correct lower, upper, and work directories
   log_info "Mounting overlay on /etc"
-  mount_tracked "${TARGET}/etc" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off" "${TARGET}/etc" || die "Overlay mount failed"
+  mount_tracked "${TARGET}/etc" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/etc,upperdir=${TARGET}/data/overlay/etc/upper,workdir=${TARGET}/data/overlay/etc/work,index=off,metacopy=off,redirect_dir=follow,xino=off" "${TARGET}/etc" || die "Overlay mount failed"
 
   #############################
   # Configure overlay for /var
@@ -214,7 +214,7 @@ mount_overlay() {
                   "${TARGET}/data/overlay/var/work"
 
   log_info "Mounting overlay on /var (install-time chroot only)"
-  mount_tracked "${TARGET}/var" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off" "${TARGET}/var" || die "Overlay mount failed for /var"
+  mount_tracked "${TARGET}/var" sudo mount -t overlay overlay -o "lowerdir=${TARGET}/var,upperdir=${TARGET}/data/overlay/var/upper,workdir=${TARGET}/data/overlay/var/work,index=off,metacopy=off,redirect_dir=follow,xino=off" "${TARGET}/var" || die "Overlay mount failed for /var"
   #############################
   # Setup bind mounts for persistent service state
   #############################
@@ -1072,6 +1072,13 @@ generate_uki_entry() {
 # ESP because there systemd-boot is already in place.
 uki_entry_key() {
   local f="${TARGET}/usr/lib/systemd/boot/efi/systemd-bootx64.efi" v
+  # Counting only when the image can bless a good boot (shani-deploy's ESP-
+  # mounting bless-boot and its drop-in, 2026-11-19); otherwise a counted entry
+  # is never blessed and falls back after three good boots. Measured: a counted
+  # boot of a 2026-09 image failed systemd-bless-boot.service.
+  if [[ ! -f "${TARGET}/usr/lib/systemd/system/systemd-bless-boot.service.d/10-shani.conf" ]]; then
+    echo efi; return
+  fi
   v=$(sudo grep -a -o -m1 '#### LoaderInfo: systemd-boot [0-9]*' "$f" 2>/dev/null | head -1 | grep -o '[0-9]*$' || true)
   if [[ -n "$v" && "$v" -ge 258 ]]; then echo uki; else echo efi; fi
 }
