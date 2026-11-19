@@ -542,3 +542,9 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
   mounted. `install_recovery_key` now opens the volume with the new key
   (`cryptsetup open --test-passphrase`) before keeping it for the UI. Both from
   Ananta OS's acceptance tests (SysApp-Test-1, -8). Real `bootstrap` passes.
+
+- **Note on commit 57cd365 (2026-11-19):** besides what its message says, it
+  also gave configure.sh's /etc and /var overlay mounts
+  `redirect_dir=follow,xino=off` - the same change as shani-install-media's
+  dracut hook (see that commit for why and how it was measured). The message
+  is not rewritten because it was already pushed.
