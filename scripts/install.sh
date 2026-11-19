@@ -621,6 +621,7 @@ create_subvolumes() {
     # Core System Services (Required)
     "varlib/dbus"
     "varlib/systemd"
+    "varlib/extensions"
     "varlib/fontconfig"
     # Network & Connectivity
     "varlib/NetworkManager"
