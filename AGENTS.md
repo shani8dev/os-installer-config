@@ -509,3 +509,24 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
   so "the installer was fixed" would otherwise read as "the installer has no
   efivarfs problems left". It has one; it is a different one, and the two are
   independent.
+
+- **The recovery key and the install-time TPM enrollment never worked —
+  FIXED 2026-11-19.** `install_recovery_key()` ran `cryptsetup luksAddKey` and
+  `enroll_tpm_target()` ran `systemd-cryptenroll` on `/dev/mapper/shani_root`,
+  the OPENED mapping. Both need the LUKS partition, which holds the header:
+  measured on a loop device, `luksAddKey` on the mapping fails "is not a valid
+  LUKS device" and `systemd-cryptenroll` fails "Failed to load LUKS2
+  superblock", each leaving one keyslot. The recovery key was then deleted with
+  a warning, so no install ever had one. Both now use `luks_partition()`
+  (`cryptsetup status` → device, as gen-efi does). The installer's own
+  `install_recovery_key`, run old vs new on a real LUKS volume: old → 1
+  keyslot, the key does not open it; new → 2 keyslots, the key opens it. The
+  TPM path has the same fix but no TPM run yet.
+- **`install.sh` aborted with `iso_img: unbound variable` when there is no
+  image.txt — FIXED 2026-11-19.** `fetch_newer_image()` (067257a) declared
+  `local iso_img` without a value under `set -u`. The ISO always has
+  image.txt, so real installs were not hit; shani-testbed's `bootstrap` was,
+  and the suite could not bootstrap from 2026-11-16 until this fix.
+- **Boot entries use the `uki` key when systemd-boot is ≥ 258, and `panic=10`
+  is on the command line (2026-11-19)** — see shani-deploy AGENTS.md, "Boot
+  counting works with the `uki` entry key".

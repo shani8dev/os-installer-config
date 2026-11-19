@@ -1280,8 +1280,14 @@ enroll_tpm_target() {
         log_info "TPM2 PIN will be required at boot"
     fi
 
+    local part
+    part=$(luks_partition)
+    if [[ -z "$part" ]]; then
+        log_warn "Could not find the LUKS partition under ${mapper} — skipping TPM enrollment"
+        return 0
+    fi
     if PASSWORD="${OSI_ENCRYPTION_PIN}" systemd-cryptenroll \
-            --tpm2-device=auto --tpm2-pcrs="${pcrs}" "${pin_args[@]}" "${mapper}"; then
+            --tpm2-device=auto --tpm2-pcrs="${pcrs}" "${pin_args[@]}" "${part}"; then
         log_info "TPM2 enrolled — the disk unlocks automatically on this machine"
         run_in_target "mkdir -p /etc/shani && printf 'use_tpm=1\n' > /etc/shani/tpm2-enroll" \
             || log_warn "Could not record the TPM choice in /etc/shani/tpm2-enroll"
@@ -1289,6 +1295,16 @@ enroll_tpm_target() {
         log_warn "TPM2 enrollment failed — the disk will still unlock with the PIN"
     fi
     return 0
+}
+
+# Function: luks_partition
+# The LUKS partition under the opened root (/dev/mapper/${ROOTLABEL}).
+# cryptsetup luksAddKey and systemd-cryptenroll need the partition, which holds
+# the LUKS header; given the opened mapping they fail ("is not a valid LUKS
+# device" / "Failed to load LUKS2 superblock", measured 2026-11-19 with a loop
+# device in the builder container). Same lookup gen-efi.sh uses.
+luks_partition() {
+    sudo cryptsetup status "/dev/mapper/${ROOTLABEL}" 2>/dev/null | sed -n 's/^ *device: *//p' | head -1 | xargs
 }
 
 # Function: install_recovery_key
@@ -1305,8 +1321,15 @@ install_recovery_key() {
     mkdir -p /run/os-installer
     printf '%s' "${OSI_RECOVERY_KEY}" > "${keyfile}"
     chmod 600 "${keyfile}"
+    local part
+    part=$(luks_partition)
+    if [[ -z "$part" ]]; then
+        rm -f "${keyfile}"
+        log_warn "Could not find the LUKS partition under /dev/mapper/${ROOTLABEL} — skipping the recovery key"
+        return 0
+    fi
     if printf '%s\n' "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup luksAddKey \
-            --new-keyfile "${keyfile}" "/dev/mapper/${ROOTLABEL}" 2>/dev/null; then
+            --new-keyfile "${keyfile}" "${part}" 2>/dev/null; then
         chmod 644 "${keyfile}"
         log_info "LUKS recovery key added"
     else

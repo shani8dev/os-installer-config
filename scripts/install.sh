@@ -327,7 +327,7 @@ fetch_newer_image() {
   local channel="${OSI_UPDATE_CHANNEL:-stable}"
   local keyring="${OSI_IMAGE_KEYRING:-/usr/share/pacman/keyrings/shani.gpg}"
   local trusted="${OSI_IMAGE_TRUSTED:-/usr/share/pacman/keyrings/shani-trusted}"
-  local iso_img remote iso_date profile r_date dir gpghome fpr
+  local iso_img="" remote="" iso_date profile r_date dir gpghome fpr
   [[ -r "${IMAGE_DIR}/image.txt" ]] && iso_img=$(tr -d '[:space:]' < "${IMAGE_DIR}/image.txt")
   if [[ ! "${iso_img}" =~ ^shanios-([0-9]{8})-([a-z0-9_-]+)\.zst$ ]]; then
     log_info "Web update: the ISO does not say which image it carries - installing its own"
