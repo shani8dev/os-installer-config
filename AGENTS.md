@@ -548,3 +548,11 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
   `redirect_dir=follow,xino=off` - the same change as shani-install-media's
   dracut hook (see that commit for why and how it was measured). The message
   is not rewritten because it was already pushed.
+
+- **The installer no longer keeps its own list of /data/varlib folders
+  (2026-11-19).** `create_bind_sources` (end of `extract_system_image`, both
+  fresh and keep-data installs) makes every /data folder the installed image's
+  fstab bind-mounts, with the same rule as shani-deploy's
+  `parse_fstab_bind_dirs`. The hand-kept array had drifted from fstab both
+  ways. Measured: a real niri bootstrap logged "Created 38 bind source
+  folder(s) in @data, from the image's fstab".

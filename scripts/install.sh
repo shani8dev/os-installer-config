@@ -615,61 +615,12 @@ create_subvolumes() {
     fi
   done
 
-  # Create persistent service state directories in @data/varlib
-  log_info "Creating persistent service state directories"
+  # The service state folders the image's fstab binds from /data are made by
+  # create_bind_sources() once the image is extracted - from that fstab, so the
+  # list cannot drift from it. Only folders no fstab line binds are made here.
+  log_info "Creating persistent data directories"
   local varlib_dirs=(
-    # Core System Services (Required)
-    "varlib/dbus"
-    "varlib/systemd"
-    "varlib/extensions"
-    "varlib/fontconfig"
-    # Network & Connectivity
-    "varlib/NetworkManager"
-    "varlib/bluetooth"
-    "varlib/firewalld"
-    # File Sharing & Network Services
-    "varlib/samba"
-    "varlib/nfs"
-    # Remote Access & VPN Services
-    "varlib/caddy"
-    "varlib/tailscale"
-    "varlib/cloudflared"
-    "varlib/geoclue"
-    # Display Managers
-    "varlib/gdm"
-    "varlib/sddm"
-    "varlib/plasmalogin"
-    # Audio & Peripherals
-    "varlib/colord"
-    "varlib/pipewire"
-    "varlib/rtkit"
-    "varlib/cups"
-    "varlib/sane"
-    "varlib/upower"
-    # User Authentication & Security
-    "varlib/fprint"
-    "varlib/AccountsService"
-    "varlib/boltd"
-    "varlib/sudo"
-    "varlib/sshd"
-    "varlib/polkit-1"
-    # Hardware & Firmware
-    "varlib/fwupd"
-    "varlib/tpm2-tss"
-    # Data Protection & Persistence
-    "varlib/fail2ban"
-    "varlib/restic"
-    "varlib/rclone"
-    "varlib/appimage"
-    # Job Scheduling Spool
-    "varspool/anacron"
-    "varspool/cron"
-    "varspool/at"
-    # Print & Mail Spools
-    "varspool/cups"
-    "varspool/samba"
-    "varspool/postfix"
-    # User Downloads
+    # User Downloads (shani-deploy keeps update images here)
     "downloads"
   )
 
@@ -684,6 +635,26 @@ create_subvolumes() {
   done
 
   log_info "All required directories created successfully"
+}
+
+# Function: create_bind_sources
+# Every /data folder the installed image's fstab bind-mounts (e.g.
+# /data/varlib/vnstat -> /var/lib/vnstat). The fstab is the one list: the same
+# rule as shani-deploy's parse_fstab_bind_dirs, which creates any that are
+# missing at every update, so a fresh install and an updated machine agree.
+# Before 2026-11-19 this was a hand-kept array that had drifted from fstab in
+# both directions (folders made that nothing bound, binds whose folder was
+# never made - the bind is then silently skipped under nofail).
+create_bind_sources() {
+  local fstab="/mnt/@blue/etc/fstab" src n=0
+  [[ -f "${fstab}" ]] || { log_warn "No ${fstab} - bind source folders not created"; return 0; }
+  while read -r src; do
+    [[ "${src}" == /data/* && "${src}" != *..* ]] || continue
+    sudo mkdir -p "/mnt/@data/${src#/data/}" || die "Failed to create ${src}"
+    n=$((n + 1))
+  done < <(awk '/[[:space:]]bind[,[:space:]]/ && !/^[[:space:]]*#/ {
+             if ($4 ~ /bind/ && $1 ~ /^\/data\//) print $1 }' "${fstab}" | sort -u)
+  log_info "Created ${n} bind source folder(s) in @data, from the image's fstab"
 }
 
 # Function: extract_system_image
@@ -701,6 +672,7 @@ extract_system_image() {
   sudo btrfs subvolume snapshot -r "/mnt/shanios_base" "/mnt/@blue" || die "Snapshot creation for @blue failed"
   log_info "Creating snapshot @green from @blue"
   sudo btrfs subvolume snapshot -r "/mnt/@blue" "/mnt/@green" || die "Snapshot creation for @green failed"
+  create_bind_sources
   log_info "Deleting original subvolume shanios_base"
   sudo btrfs subvolume delete "/mnt/shanios_base" || log_warn "Could not delete shanios_base; please remove manually later"
   log_info "Setting active slot marker to 'blue'"
