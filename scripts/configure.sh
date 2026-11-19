@@ -939,7 +939,7 @@ generate_uki_entry() {
     encryption_params=" rd.luks.uuid=${LUKS_UUID} rd.luks.name=${LUKS_UUID}=${ROOTLABEL} rd.luks.options=${LUKS_UUID}=tpm2-device=auto"
   fi
 
-  local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf lockdown=confidentiality rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
+  local cmdline="quiet splash systemd.volatile=state ro lsm=landlock,lockdown,yama,integrity,apparmor,bpf lockdown=confidentiality panic=10 rootfstype=btrfs rootflags=subvol=@${slot},ro,noatime,compress=zstd,space_cache=v2,autodefrag${encryption_params} root=${rootdev}"
 
   # Append keyboard mapping parameter if OSI_KEYBOARD_LAYOUT is provided.
   # Use parse_keyboard_layout to extract the vconsole_map (primary layout only)
@@ -1054,7 +1054,26 @@ generate_uki_entry() {
   # this printf leaves a PARTIAL boot entry on the ESP, and systemd-boot reads
   # that file on the next boot. Half an entry is not an entry the loader skips -
   # it is a file with no `efi` line.
-  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\nefi     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/.${entry_filename}.tmp && mv -f ${UKI_BOOT_ENTRY}/.${entry_filename}.tmp ${UKI_BOOT_ENTRY}/${entry_filename}"
+  #
+  # The key is "uki" when the systemd-boot on the ESP is 258 or newer, else
+  # "efi" - same rule and reason as shani-deploy's _uki_entry_key(): only a
+  # "uki" entry gets boot counting (an "efi" entry's +3-0 is never decremented,
+  # systemd/systemd#40405), and a systemd-boot older than 258 cannot read "uki".
+  local entry_key
+  entry_key=$(uki_entry_key)
+  run_in_target "mkdir -p ${UKI_BOOT_ENTRY} && printf 'title   ${OS_NAME}-${slot}${suffix}\n${entry_key}     /EFI/${OS_NAME}/${OS_NAME}-${slot}.efi\n' > ${UKI_BOOT_ENTRY}/.${entry_filename}.tmp && mv -f ${UKI_BOOT_ENTRY}/.${entry_filename}.tmp ${UKI_BOOT_ENTRY}/${entry_filename}"
+}
+
+# Function: uki_entry_key
+# "uki" when the systemd-boot this install puts on the ESP is 258 or newer,
+# else "efi". The entries are written BEFORE generate_loader_conf copies
+# systemd-boot to the ESP, so read the binary it copies (the target's own),
+# not the ESP. Same rule as shani-deploy's _uki_entry_key(), which reads the
+# ESP because there systemd-boot is already in place.
+uki_entry_key() {
+  local f="${TARGET}/usr/lib/systemd/boot/efi/systemd-bootx64.efi" v
+  v=$(sudo grep -a -o -m1 '#### LoaderInfo: systemd-boot [0-9]*' "$f" 2>/dev/null | head -1 | grep -o '[0-9]*$' || true)
+  if [[ -n "$v" && "$v" -ge 258 ]]; then echo uki; else echo efi; fi
 }
 
 # Function: generate_loader_conf
