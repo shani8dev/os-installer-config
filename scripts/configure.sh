@@ -1329,9 +1329,12 @@ install_recovery_key() {
         return 0
     fi
     if printf '%s\n' "${OSI_ENCRYPTION_PIN}" | sudo cryptsetup luksAddKey \
-            --new-keyfile "${keyfile}" "${part}" 2>/dev/null; then
+            --new-keyfile "${keyfile}" "${part}" 2>/dev/null \
+       && sudo cryptsetup open --test-passphrase "${part}" --key-file "${keyfile}" 2>/dev/null; then
+        # tested before it is shown: a key that does not open the disk must not
+        # be handed to a person to keep
         chmod 644 "${keyfile}"
-        log_info "LUKS recovery key added"
+        log_info "LUKS recovery key added and tested"
     else
         rm -f "${keyfile}"
         log_warn "Could not add the LUKS recovery key"

@@ -530,3 +530,15 @@ Implementation priorities are per `../IMPLEMENTATION-ROADMAP.md` (master roadmap
 - **Boot entries use the `uki` key when systemd-boot is ≥ 258, and `panic=10`
   is on the command line (2026-11-19)** — see shani-deploy AGENTS.md, "Boot
   counting works with the `uki` entry key".
+
+- **The installer refuses a target that is in use, and tests the recovery key
+  (2026-11-19).** `check_target_not_in_use()` runs first in `do_setup`, before
+  anything is partitioned: a target (whole disk, or the two partitions in
+  partition mode) with anything mounted or used as swap, or the disk holding
+  `/run/archiso/bootmnt` (the live medium), is refused with the reason and
+  nothing changed. Measured on loop disks in a privileged container: unmounted
+  disk allowed; mounted partition, the live-medium disk and a mounted target
+  partition refused; another disk still allowed while the live medium is
+  mounted. `install_recovery_key` now opens the volume with the new key
+  (`cryptsetup open --test-passphrase`) before keeping it for the UI. Both from
+  Ananta OS's acceptance tests (SysApp-Test-1, -8). Real `bootstrap` passes.

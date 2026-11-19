@@ -852,8 +852,47 @@ keep_data_setup() {
   extract_system_image
 }
 
+# Function: check_target_not_in_use
+# Refuse a target that is mounted, used as swap, or holds the live medium this
+# installer is running from - before anything is partitioned or formatted.
+# Partitioning a disk in use destroys the running live system or another
+# system's mounted files, and the os-installer page that picks the disk is not
+# the last line of defence: this script is what runs sfdisk. (The check is
+# Ananta OS's SysApp-Test-1: "the live medium and mounted disks - refuses those
+# disks".) Whole-disk mode checks the disk and everything on it; partition mode
+# checks the two partitions it formats.
+check_target_not_in_use() {
+  local targets dev name mps live_src live_disk busy=()
+  if [[ "${OSI_DEVICE_IS_PARTITION:-0}" -eq 1 ]]; then targets="${ROOT_PARTITION} ${EFI_PARTITION}"
+  else targets="${OSI_DEVICE_PATH}"; fi
+  for dev in ${targets}; do
+    dev=$(readlink -f "${dev}")
+    while read -r name mps; do
+      [[ -n "${mps}" ]] && busy+=("${name} (${mps//$'\n'/, })")
+    done < <(lsblk -nlpo NAME,MOUNTPOINTS "${dev}" 2>/dev/null || true)
+  done
+  # The live medium: whatever disk holds the mounted ISO (archiso's bootmnt).
+  live_src=$(findmnt -nvo SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+  if [[ -n "${live_src}" ]]; then
+    live_disk=$(lsblk -nlpo PKNAME "${live_src}" 2>/dev/null | head -1)
+    live_disk=${live_disk:-${live_src}}
+    for dev in ${targets}; do
+      dev=$(readlink -f "${dev}")
+      if [[ "${dev}" == "${live_disk}" || "${dev}" == "${live_src}" \
+            || "$(lsblk -nlpo PKNAME "${dev}" 2>/dev/null | head -1)" == "${live_disk}" ]]; then
+        busy+=("${dev} (the live medium this installer started from)")
+      fi
+    done
+  fi
+  (( ${#busy[@]} == 0 )) && return 0
+  log_error "The install target is in use - nothing was changed:"
+  local b; for b in "${busy[@]}"; do log_error "  ${b}"; done
+  die "Choose another disk, or unmount it first."
+}
+
 do_setup() {
   _progress_total "${ROOTFSZST_SOURCE}" "${FLATPAKFS_SOURCE}" "${SNAPFS_SOURCE}" "${AIMODELSFS_SOURCE}"
+  check_target_not_in_use
   if [[ "${KEEP_DATA}" == "1" ]]; then
     keep_data_setup
   else
